@@ -46,18 +46,10 @@ pub fn record(
 ) -> Result<(), RecordError> {
     let constring = format!("{}:{}", host, port);
 
-    let res;
     match TcpStream::connect(&constring) {
-        Ok(stream) => {
-            handle_client(stream, callsign, callback)?;
-            res = Ok(());
-        }
-        Err(_) => {
-            res = Err(RecordError::ConnectionError);
-        }
+        Ok(stream) => handle_client(stream, callsign, callback),
+        Err(_) => Err(RecordError::ConnectionError),
     }
-
-    res
 }
 
 /// Handle client connection to dx cluster server.
@@ -144,7 +136,7 @@ fn handle_auth(stream: &mut TcpStream, callsign: &str) -> Result<(), RecordError
                     break;
                 }
 
-                if let Err(_) = ret {
+                if ret.is_err() {
                     timeout_counter -= 1;
                     if timeout_counter == 0 {
                         res = Err(RecordError::AuthenticationError);
@@ -171,26 +163,20 @@ fn is_auth_token(token: &str) -> bool {
         }
     }
 
-    return false;
+    false
 }
 
 /// Send callsign for authentication.
 fn send_line(stream: &mut TcpStream, data: &str) -> Result<(), RecordError> {
-    let res;
-
     match stream.write(format!("{}\r\n", data).as_bytes()) {
         Ok(0) => {
-            // Stream closed
-            res = Err(RecordError::ConnectionLost);
+            // EOF
+            Err(RecordError::ConnectionLost)
         }
-        Ok(_) => {
-            res = Ok(());
-        }
+        Ok(_) => Ok(()),
         Err(_) => {
             // Error
-            res = Err(RecordError::UnknownError);
+            Err(RecordError::UnknownError)
         }
     }
-
-    return res;
 }
