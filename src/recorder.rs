@@ -15,6 +15,9 @@ pub enum RecordError {
 
     /// Connection error (failed to connect)
     ConnectionError,
+
+    /// Authentication error
+    AuthenticationError,
 }
 
 impl fmt::Display for RecordError {
@@ -55,7 +58,7 @@ pub fn record(host: &str, port: u16, callsign: &str) -> Result<(), RecordError> 
 /// Handle client connection to dx cluster server.
 /// First authenticate with callsign and then start processing incoming spots.
 fn handle_client(mut stream: TcpStream, callsign: &str) -> Result<(), RecordError> {
-    auth(&mut stream, callsign)?;
+    handle_auth(&mut stream, callsign)?;
     process_data(&mut stream)?;
 
     Ok(())
@@ -102,30 +105,41 @@ fn clean_line(line: &str) -> &str {
     line.trim_end().trim_end_matches('\u{0007}')
 }
 
-/// Authenticate at remote cluster server with callsign.
-fn auth(stream: &mut TcpStream, callsign: &str) -> Result<(), RecordError> {
-    stream.set_read_timeout(Some(Duration::new(1, 0))).unwrap();
+/// Handle authentication at remote cluster server with callsign.
+fn handle_auth(stream: &mut TcpStream, callsign: &str) -> Result<(), RecordError> {
+    stream.set_read_timeout(Some(Duration::new(0, 500_000_000))).unwrap();
 
     let mut reader = BufReader::new(stream.try_clone().unwrap());
-
     let res;
+    let mut timeout_counter = 10;
 
-    // FIXME: Cover against possible endless loop. Add some form of timeout
-    let mut buf = String::new();
+    let mut data = String::new();
     loop {
-        match reader.read_line(&mut buf) {
+        match reader.read_line(&mut data) {
             Ok(0) => { // EOF
                 res = Err(RecordError::ConnectionLost);
                 break;
             },
-            _ => {
-                if is_auth_token(&buf) {
-                    res = send_auth_call(stream, callsign);
+            Err(err) if err.kind() != std::io::ErrorKind::WouldBlock => { // Unknown error
+                res = Err(RecordError::UnknownError);
+                break;
+            },
+            ret => { // New line or timed out
+                if is_auth_token(&data) {
+                    res = send_line(stream, callsign);
                     break;
+                }
+
+                if let Err(_) = ret {
+                    timeout_counter -= 1;
+                    if timeout_counter == 0 {
+                        res = Err(RecordError::AuthenticationError);
+                        break;
+                    }
                 }
             }
         }
-        buf.clear();
+        data.clear();
     }
 
     stream.set_read_timeout(None).unwrap();
@@ -147,10 +161,10 @@ fn is_auth_token(token: &str) -> bool {
 }
 
 /// Send callsign for authentication.
-fn send_auth_call(stream: &mut TcpStream, callsign: &str) -> Result<(), RecordError> {
+fn send_line(stream: &mut TcpStream, data: &str) -> Result<(), RecordError> {
     let res;
 
-    match stream.write(format!("{}\r\n", callsign).as_bytes()) {
+    match stream.write(format!("{}\r\n", data).as_bytes()) {
         Ok(0) => { // Stream closed
             res = Err(RecordError::ConnectionLost);
         },
