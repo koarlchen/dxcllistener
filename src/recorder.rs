@@ -32,19 +32,19 @@ impl fmt::Display for RecordError {
 ///
 /// * `host`: Host of server
 /// * `port`: Port of server
-/// * `callsign`: Callsign to use for authentication.
+/// * `callsign`: Callsign to use for authentication
+/// * `callback`: Function callback that will be called each time a new spot is parsed successfully
 ///
 /// ## Result
 ///
 /// TODO
-pub fn record(host: &str, port: u16, callsign: &str) -> Result<(), RecordError> {
+pub fn record(host: &str, port: u16, callsign: &str, callback: Box<dyn Fn(dxclparser::Spot)>) -> Result<(), RecordError> {
     let constring = format!("{}:{}", host, port);
 
     let res;
     match TcpStream::connect(&constring) {
         Ok(stream) => {
-            println!("Successfully connected to {}", &constring);
-            handle_client(stream, callsign)?;
+            handle_client(stream, callsign, callback)?;
             res = Ok(());
         },
         Err(_) => {
@@ -57,15 +57,15 @@ pub fn record(host: &str, port: u16, callsign: &str) -> Result<(), RecordError> 
 
 /// Handle client connection to dx cluster server.
 /// First authenticate with callsign and then start processing incoming spots.
-fn handle_client(mut stream: TcpStream, callsign: &str) -> Result<(), RecordError> {
+fn handle_client(mut stream: TcpStream, callsign: &str, callback: Box<dyn Fn(dxclparser::Spot)>) -> Result<(), RecordError> {
     handle_auth(&mut stream, callsign)?;
-    process_data(&mut stream)?;
+    process_data(&mut stream, callback)?;
 
     Ok(())
 }
 
 /// Process data received from cluster server.
-fn process_data(stream: &mut TcpStream) -> Result<(), RecordError> {
+fn process_data(stream: &mut TcpStream, callback: Box<dyn Fn(dxclparser::Spot)>) -> Result<(), RecordError> {
     let mut reader = BufReader::new(stream.try_clone().unwrap());
 
     let res;
@@ -79,13 +79,8 @@ fn process_data(stream: &mut TcpStream) -> Result<(), RecordError> {
             }
             Ok(_) => {
                 let clean = clean_line(&line);
-                match dxclparser::parse(clean) {
-                    Ok(spot) => {
-                        println!("Found spot: {}", spot.to_json());
-                    },
-                    Err(err) => {
-                        println!("Failed to parse line: '{}' ({})", clean, err);
-                    },
+                if let Ok(spot) = dxclparser::parse(clean) {
+                    callback(spot);
                 }
             }
             Err(_) => { // Error

@@ -10,7 +10,15 @@ fn main() {
         eprintln!("Usage: {} <host> <port> <call>", args[0]);
         retval = 1;
     } else {
-        match dxclrecorder::record(&args[1], args[2].parse::<u16>().unwrap(), &args[3]) {
+        let host = &args[1];
+        let port = args[2].parse::<u16>().unwrap();
+        let call = &args[3];
+
+        let handler: Box<dyn Fn(dxclparser::Spot)> = Box::new(|spot| {
+            println!("{}", spot.to_json())
+        });
+
+        match dxclrecorder::record(host, port, call, handler) {
             Ok(_) => retval = 0,
             Err(err) => {
                 eprintln!("{}", err);
