@@ -14,9 +14,8 @@ fn main() {
         let port = args[2].parse::<u16>().unwrap();
         let call = &args[3];
 
-        let handler: Box<dyn Fn(dxclparser::Spot)> = Box::new(|spot| {
-            println!("{}", spot.to_json())
-        });
+        let handler: Box<dyn Fn(dxclparser::Spot)> =
+            Box::new(|spot| println!("{}", spot.to_json()));
 
         match dxclrecorder::record(host, port, call, handler) {
             Ok(_) => retval = 0,

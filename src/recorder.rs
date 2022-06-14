@@ -1,8 +1,8 @@
-use std::net::{TcpStream};
-use std::time::Duration;
-use std::io::{Write, BufReader, BufRead};
-use std::str;
 use std::fmt;
+use std::io::{BufRead, BufReader, Write};
+use std::net::TcpStream;
+use std::str;
+use std::time::Duration;
 
 /// Possible errors while recording
 #[derive(Debug, PartialEq)]
@@ -38,7 +38,12 @@ impl fmt::Display for RecordError {
 /// ## Result
 ///
 /// TODO
-pub fn record(host: &str, port: u16, callsign: &str, callback: Box<dyn Fn(dxclparser::Spot)>) -> Result<(), RecordError> {
+pub fn record(
+    host: &str,
+    port: u16,
+    callsign: &str,
+    callback: Box<dyn Fn(dxclparser::Spot)>,
+) -> Result<(), RecordError> {
     let constring = format!("{}:{}", host, port);
 
     let res;
@@ -46,7 +51,7 @@ pub fn record(host: &str, port: u16, callsign: &str, callback: Box<dyn Fn(dxclpa
         Ok(stream) => {
             handle_client(stream, callsign, callback)?;
             res = Ok(());
-        },
+        }
         Err(_) => {
             res = Err(RecordError::ConnectionError);
         }
@@ -57,7 +62,11 @@ pub fn record(host: &str, port: u16, callsign: &str, callback: Box<dyn Fn(dxclpa
 
 /// Handle client connection to dx cluster server.
 /// First authenticate with callsign and then start processing incoming spots.
-fn handle_client(mut stream: TcpStream, callsign: &str, callback: Box<dyn Fn(dxclparser::Spot)>) -> Result<(), RecordError> {
+fn handle_client(
+    mut stream: TcpStream,
+    callsign: &str,
+    callback: Box<dyn Fn(dxclparser::Spot)>,
+) -> Result<(), RecordError> {
     handle_auth(&mut stream, callsign)?;
     process_data(&mut stream, callback)?;
 
@@ -65,7 +74,10 @@ fn handle_client(mut stream: TcpStream, callsign: &str, callback: Box<dyn Fn(dxc
 }
 
 /// Process data received from cluster server.
-fn process_data(stream: &mut TcpStream, callback: Box<dyn Fn(dxclparser::Spot)>) -> Result<(), RecordError> {
+fn process_data(
+    stream: &mut TcpStream,
+    callback: Box<dyn Fn(dxclparser::Spot)>,
+) -> Result<(), RecordError> {
     let mut reader = BufReader::new(stream.try_clone().unwrap());
 
     let res;
@@ -73,7 +85,8 @@ fn process_data(stream: &mut TcpStream, callback: Box<dyn Fn(dxclparser::Spot)>)
     let mut line = String::new();
     loop {
         match reader.read_line(&mut line) {
-            Ok(0) => { // EOF
+            Ok(0) => {
+                // EOF
                 res = Err(RecordError::ConnectionLost);
                 break;
             }
@@ -83,10 +96,11 @@ fn process_data(stream: &mut TcpStream, callback: Box<dyn Fn(dxclparser::Spot)>)
                     callback(spot);
                 }
             }
-            Err(_) => { // Error
+            Err(_) => {
+                // Error
                 res = Err(RecordError::UnknownError);
                 break;
-            },
+            }
         }
         line.clear();
     }
@@ -102,7 +116,9 @@ fn clean_line(line: &str) -> &str {
 
 /// Handle authentication at remote cluster server with callsign.
 fn handle_auth(stream: &mut TcpStream, callsign: &str) -> Result<(), RecordError> {
-    stream.set_read_timeout(Some(Duration::new(0, 500_000_000))).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::new(0, 500_000_000)))
+        .unwrap();
 
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let res;
@@ -111,15 +127,18 @@ fn handle_auth(stream: &mut TcpStream, callsign: &str) -> Result<(), RecordError
     let mut data = String::new();
     loop {
         match reader.read_line(&mut data) {
-            Ok(0) => { // EOF
+            Ok(0) => {
+                // EOF
                 res = Err(RecordError::ConnectionLost);
                 break;
-            },
-            Err(err) if err.kind() != std::io::ErrorKind::WouldBlock => { // Unknown error
+            }
+            Err(err) if err.kind() != std::io::ErrorKind::WouldBlock => {
+                // Unknown error
                 res = Err(RecordError::UnknownError);
                 break;
-            },
-            ret => { // New line or timed out
+            }
+            ret => {
+                // New line or timed out
                 if is_auth_token(&data) {
                     res = send_line(stream, callsign);
                     break;
@@ -160,13 +179,15 @@ fn send_line(stream: &mut TcpStream, data: &str) -> Result<(), RecordError> {
     let res;
 
     match stream.write(format!("{}\r\n", data).as_bytes()) {
-        Ok(0) => { // Stream closed
+        Ok(0) => {
+            // Stream closed
             res = Err(RecordError::ConnectionLost);
-        },
+        }
         Ok(_) => {
             res = Ok(());
-        },
-        Err(_) => { // Error
+        }
+        Err(_) => {
+            // Error
             res = Err(RecordError::UnknownError);
         }
     }
