@@ -166,7 +166,8 @@ fn is_auth_token(token: &str) -> bool {
     false
 }
 
-/// Send callsign for authentication.
+/// Send a string through tcp stream.
+/// Appends '\r\n' to the string before sending.
 fn send_line(stream: &mut TcpStream, data: &str) -> Result<(), RecordError> {
     match stream.write(format!("{}\r\n", data).as_bytes()) {
         Ok(0) => {
