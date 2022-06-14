@@ -12,7 +12,10 @@ fn main() {
     } else {
         match dxclrecorder::record(&args[1], args[2].parse::<u16>().unwrap(), &args[3]) {
             Ok(_) => retval = 0,
-            Err(_) => retval = 1,
+            Err(err) => {
+                eprintln!("{}", err);
+                retval = 1;
+            }
         }
     }
 
