@@ -1,5 +1,6 @@
 use std::env;
 use std::process;
+use std::sync::{mpsc, Arc};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -14,11 +15,24 @@ fn main() {
         let port = args[2].parse::<u16>().unwrap();
         let call = &args[3];
 
-        let handler: Box<dyn Fn(dxclparser::Spot)> =
-            Box::new(|spot| println!("{}", spot.to_json()));
+        let (tx, rx) = mpsc::channel();
 
-        match dxclrecorder::record(host, port, call, handler) {
-            Ok(_) => retval = 0,
+        ctrlc::set_handler(move || {
+            println!("Ctrl-C caught");
+            tx.send(()).expect("Failed to send signal on channel");
+        })
+        .expect("Failed to listen on Ctrl-C");
+
+        let handler: Arc<dyn Fn(dxclparser::Spot) + Send + Sync> =
+            Arc::new(|spot| println!("{}", spot.to_json()));
+
+        match dxclrecorder::record(host.into(), port, call.into(), handler, rx)
+            .join()
+            .unwrap()
+        {
+            Ok(_) => {
+                retval = 0;
+            }
             Err(err) => {
                 eprintln!("{}", err);
                 retval = 1;

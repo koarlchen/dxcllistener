@@ -2,6 +2,10 @@ use std::fmt;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::str;
+use std::sync::mpsc;
+use std::sync::Arc;
+use std::thread;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 /// Possible errors while recording
@@ -18,6 +22,9 @@ pub enum RecordError {
 
     /// Authentication error
     AuthenticationError,
+
+    /// Stop request
+    StopRequest,
 }
 
 impl fmt::Display for RecordError {
@@ -39,17 +46,25 @@ impl fmt::Display for RecordError {
 ///
 /// TODO
 pub fn record(
-    host: &str,
+    host: String,
     port: u16,
-    callsign: &str,
-    callback: Box<dyn Fn(dxclparser::Spot)>,
-) -> Result<(), RecordError> {
-    let constring = format!("{}:{}", host, port);
+    callsign: String,
+    callback: Arc<dyn Fn(dxclparser::Spot) + Send + Sync>,
+    signal: mpsc::Receiver<()>,
+) -> JoinHandle<Result<(), RecordError>> {
+    let thdname = format!("{}@{}:{}", callsign, host, port);
 
-    match TcpStream::connect(&constring) {
-        Ok(stream) => handle_client(stream, callsign, callback),
-        Err(_) => Err(RecordError::ConnectionError),
-    }
+    thread::Builder::new()
+        .name(thdname)
+        .spawn(move || {
+            let constring = format!("{}:{}", host, port);
+
+            match TcpStream::connect(&constring) {
+                Ok(stream) => handle_client(stream, &callsign, callback, signal),
+                Err(_) => Err(RecordError::ConnectionError),
+            }
+        })
+        .expect("Failed to spawn thread")
 }
 
 /// Handle client connection to dx cluster server.
@@ -57,18 +72,26 @@ pub fn record(
 fn handle_client(
     mut stream: TcpStream,
     callsign: &str,
-    callback: Box<dyn Fn(dxclparser::Spot)>,
+    callback: Arc<dyn Fn(dxclparser::Spot)>,
+    signal: mpsc::Receiver<()>,
 ) -> Result<(), RecordError> {
-    handle_auth(&mut stream, callsign)?;
-    process_data(&mut stream, callback)?;
+    stream
+        .set_read_timeout(Some(Duration::new(0, 500_000_000)))
+        .unwrap();
+
+    handle_auth(&mut stream, callsign, &signal)?;
+    process_data(&mut stream, callback, &signal)?;
 
     Ok(())
 }
 
-/// Process data received from cluster server.
+/// Continously listen on the tcp stream for new spots.
+/// For each received and successfully parsed spot the callback function will be called with the spot as the argument.
+/// Timeouts are used to regulary check for the stop signal.
 fn process_data(
     stream: &mut TcpStream,
-    callback: Box<dyn Fn(dxclparser::Spot)>,
+    callback: Arc<dyn Fn(dxclparser::Spot)>,
+    signal: &mpsc::Receiver<()>,
 ) -> Result<(), RecordError> {
     let mut reader = BufReader::new(stream.try_clone().unwrap());
 
@@ -82,36 +105,48 @@ fn process_data(
                 res = Err(RecordError::ConnectionLost);
                 break;
             }
-            Ok(_) => {
-                let clean = clean_line(&line);
-                if let Ok(spot) = dxclparser::parse(clean) {
-                    callback(spot);
-                }
-            }
-            Err(_) => {
-                // Error
+            Err(err) if err.kind() != std::io::ErrorKind::WouldBlock => {
+                // Catch all errors, except for timeout
                 res = Err(RecordError::UnknownError);
                 break;
             }
+            ret => {
+                // Check for signal to stop execution
+                if signal.try_recv().is_ok() {
+                    res = Err(RecordError::StopRequest);
+                    break;
+                }
+
+                // If no timeout occurred, parse data
+                if ret.is_ok() {
+                    let clean = clean_line(&line);
+                    if let Ok(spot) = dxclparser::parse(clean) {
+                        callback(spot);
+                    }
+                    line.clear();
+                }
+            }
         }
-        line.clear();
     }
 
     res
 }
 
 /// Clean line from unwanted characters.
-/// Remove whitespace characters from the end and remove bell character (0x07)
+/// Remove whitespace characters and bell characters (0x07) from the end of the string.
 fn clean_line(line: &str) -> &str {
     line.trim_end().trim_end_matches('\u{0007}')
 }
 
 /// Handle authentication at remote cluster server with callsign.
-fn handle_auth(stream: &mut TcpStream, callsign: &str) -> Result<(), RecordError> {
-    stream
-        .set_read_timeout(Some(Duration::new(0, 500_000_000)))
-        .unwrap();
-
+/// Depending on the software running on the cluster server, the authentication token may contain a newline an the end.
+/// Therefore use timeouts to check for authentication tokens that are not ending with a newline.
+/// Timeouts are further used to regulary check for the stop signal.
+fn handle_auth(
+    stream: &mut TcpStream,
+    callsign: &str,
+    signal: &mpsc::Receiver<()>,
+) -> Result<(), RecordError> {
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let res;
     let mut timeout_counter = 10;
@@ -125,30 +160,36 @@ fn handle_auth(stream: &mut TcpStream, callsign: &str) -> Result<(), RecordError
                 break;
             }
             Err(err) if err.kind() != std::io::ErrorKind::WouldBlock => {
-                // Unknown error
+                // Catch all errors, except for timeout
                 res = Err(RecordError::UnknownError);
                 break;
             }
             ret => {
+                // Check for signal to stop execution
+                if signal.try_recv().is_ok() {
+                    res = Err(RecordError::StopRequest);
+                    break;
+                }
+
                 // New line or timed out
                 if is_auth_token(&data) {
                     res = send_line(stream, callsign);
                     break;
                 }
 
+                // Check for timeout (WouldBlock)
                 if ret.is_err() {
                     timeout_counter -= 1;
                     if timeout_counter == 0 {
                         res = Err(RecordError::AuthenticationError);
                         break;
                     }
+                } else {
+                    data.clear();
                 }
             }
         }
-        data.clear();
     }
-
-    stream.set_read_timeout(None).unwrap();
 
     res
 }
