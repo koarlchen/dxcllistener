@@ -23,14 +23,24 @@ pub enum RecordError {
     /// Authentication error
     AuthenticationError,
 
-    /// Stop request
-    StopRequest,
+    /// Internal error
+    InternalError,
 }
 
 impl fmt::Display for RecordError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "Error while recording: {:?}", self)
     }
+}
+
+/// State of communication
+#[derive(PartialEq)]
+enum State {
+    /// Authenticate at server
+    Auth,
+
+    /// Receive and parse spots from server
+    Parse,
 }
 
 /// Record data from dx cluster.
@@ -41,10 +51,13 @@ impl fmt::Display for RecordError {
 /// * `port`: Port of server
 /// * `callsign`: Callsign to use for authentication
 /// * `callback`: Function callback that will be called each time a new spot is parsed successfully
+/// * `signal`: Signal to request execution stop of the thread
 ///
 /// ## Result
 ///
-/// TODO
+/// Returns a thread handle to join for the result.
+/// The result shall be `Ok(_)`, if the thread has been stopped on request.
+/// An `Err(RecordError)` is returned in case something went wrong.
 pub fn record(
     host: String,
     port: u16,
@@ -60,45 +73,39 @@ pub fn record(
             let constring = format!("{}:{}", host, port);
 
             match TcpStream::connect(&constring) {
-                Ok(stream) => handle_client(stream, &callsign, callback, signal),
+                Ok(stream) => run(stream, callback, signal, &callsign),
                 Err(_) => Err(RecordError::ConnectionError),
             }
         })
         .expect("Failed to spawn thread")
 }
 
-/// Handle client connection to dx cluster server.
-/// First authenticate with callsign and then start processing incoming spots.
-fn handle_client(
+/// Run the client.
+/// First, authenticate at server with callsign.
+/// Afterwards parse received spot and pass the parsed information to the callback function.
+fn run(
     mut stream: TcpStream,
-    callsign: &str,
     callback: Arc<dyn Fn(dxclparser::Spot)>,
     signal: mpsc::Receiver<()>,
+    callsign: &str,
 ) -> Result<(), RecordError> {
+    // Enable timeout of tcp stream
     stream
         .set_read_timeout(Some(Duration::new(0, 500_000_000)))
-        .unwrap();
+        .map_err(|_| RecordError::InternalError)?;
 
-    handle_auth(&mut stream, callsign, &signal)?;
-    process_data(&mut stream, callback, &signal)?;
+    let mut reader = BufReader::new(stream.try_clone().map_err(|_| RecordError::InternalError)?);
 
-    Ok(())
-}
+    let res: Result<(), RecordError>;
+    let mut timeout_counter = 10;
+    let mut state = State::Auth;
 
-/// Continously listen on the tcp stream for new spots.
-/// For each received and successfully parsed spot the callback function will be called with the spot as the argument.
-/// Timeouts are used to regulary check for the stop signal.
-fn process_data(
-    stream: &mut TcpStream,
-    callback: Arc<dyn Fn(dxclparser::Spot)>,
-    signal: &mpsc::Receiver<()>,
-) -> Result<(), RecordError> {
-    let mut reader = BufReader::new(stream.try_clone().unwrap());
-
-    let res;
-
+    // Line buffer
     let mut line = String::new();
+
+    // Communication loop
     loop {
+        // Read line, may timout after configured duration
         match reader.read_line(&mut line) {
             Ok(0) => {
                 // EOF
@@ -111,19 +118,53 @@ fn process_data(
                 break;
             }
             ret => {
-                // Check for signal to stop execution
+                // Check for signal to stop thread
                 if signal.try_recv().is_ok() {
-                    res = Err(RecordError::StopRequest);
+                    res = Ok(());
+                    stream
+                        .shutdown(std::net::Shutdown::Both)
+                        .map_err(|_| RecordError::InternalError)?;
                     break;
                 }
 
-                // If no timeout occurred, parse data
-                if ret.is_ok() {
-                    let clean = clean_line(&line);
-                    if let Ok(spot) = dxclparser::parse(clean) {
-                        callback(spot);
+                match state {
+                    // Authenticate at server
+                    State::Auth => {
+                        // New line or timed out, check for authentication string
+                        if is_auth_token(&line) {
+                            // Send callsign
+                            if let Err(err) = send_line(&mut stream, callsign) {
+                                res = Err(err);
+                                break;
+                            }
+                            // Swith state to parse incoming spots
+                            state = State::Parse;
+                        } else {
+                            // Check for timeout while authentication
+                            if ret.is_err() {
+                                timeout_counter -= 1;
+                                // Prevent endless loop, cancel authentication after a few timeouts
+                                if timeout_counter == 0 {
+                                    res = Err(RecordError::AuthenticationError);
+                                    break;
+                                }
+                            } else {
+                                // Clear buffer in case no timeout occurred which means a complete line ending with newline was received
+                                line.clear();
+                            }
+                        }
                     }
-                    line.clear();
+                    // Parse incoming spots
+                    State::Parse => {
+                        // If no timeout occurred, parse data
+                        if ret.is_ok() {
+                            let clean = clean_line(&line);
+                            if let Ok(spot) = dxclparser::parse(clean) {
+                                callback(spot);
+                            }
+                            line.clear();
+                        }
+                    }
                 }
             }
         }
@@ -136,62 +177,6 @@ fn process_data(
 /// Remove whitespace characters and bell characters (0x07) from the end of the string.
 fn clean_line(line: &str) -> &str {
     line.trim_end().trim_end_matches('\u{0007}')
-}
-
-/// Handle authentication at remote cluster server with callsign.
-/// Depending on the software running on the cluster server, the authentication token may contain a newline an the end.
-/// Therefore use timeouts to check for authentication tokens that are not ending with a newline.
-/// Timeouts are further used to regulary check for the stop signal.
-fn handle_auth(
-    stream: &mut TcpStream,
-    callsign: &str,
-    signal: &mpsc::Receiver<()>,
-) -> Result<(), RecordError> {
-    let mut reader = BufReader::new(stream.try_clone().unwrap());
-    let res;
-    let mut timeout_counter = 10;
-
-    let mut data = String::new();
-    loop {
-        match reader.read_line(&mut data) {
-            Ok(0) => {
-                // EOF
-                res = Err(RecordError::ConnectionLost);
-                break;
-            }
-            Err(err) if err.kind() != std::io::ErrorKind::WouldBlock => {
-                // Catch all errors, except for timeout
-                res = Err(RecordError::UnknownError);
-                break;
-            }
-            ret => {
-                // Check for signal to stop execution
-                if signal.try_recv().is_ok() {
-                    res = Err(RecordError::StopRequest);
-                    break;
-                }
-
-                // New line or timed out
-                if is_auth_token(&data) {
-                    res = send_line(stream, callsign);
-                    break;
-                }
-
-                // Check for timeout (WouldBlock)
-                if ret.is_err() {
-                    timeout_counter -= 1;
-                    if timeout_counter == 0 {
-                        res = Err(RecordError::AuthenticationError);
-                        break;
-                    }
-                } else {
-                    data.clear();
-                }
-            }
-        }
-    }
-
-    res
 }
 
 /// Check if a given string starts with one of the authentication tokens.

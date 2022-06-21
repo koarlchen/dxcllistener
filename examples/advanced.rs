@@ -18,8 +18,8 @@ fn main() {
     let (tx2, rx2) = mpsc::channel();
     sender.push(tx2);
 
-    dxclrecorder::record(host1.into(), port1, call.into(), handler.clone(), rx1);
-    dxclrecorder::record(host2.into(), port2, call.into(), handler, rx2);
+    let rec1 = dxclrecorder::record(host1.into(), port1, call.into(), handler.clone(), rx1);
+    let rec2 = dxclrecorder::record(host2.into(), port2, call.into(), handler, rx2);
 
     ctrlc::set_handler(move || {
         println!("Ctrl-C caught");
@@ -29,4 +29,7 @@ fn main() {
         sender.clear();
     })
     .expect("Failed to listen on Ctrl-C");
+
+    rec1.join().unwrap().unwrap();
+    rec2.join().unwrap().unwrap();
 }
