@@ -1,6 +1,6 @@
 use std::env;
 use std::process;
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, Mutex};
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -15,21 +15,32 @@ fn main() {
         let port = args[2].parse::<u16>().unwrap();
         let call = &args[3];
 
-        let (tx, rx) = mpsc::channel();
-
-        ctrlc::set_handler(move || {
-            println!("Ctrl-C caught");
-            tx.send(()).expect("Failed to send signal on channel");
-        })
-        .expect("Failed to listen on Ctrl-C");
-
         let handler: Arc<dyn Fn(dxclparser::Spot) + Send + Sync> =
             Arc::new(|spot| println!("{}", spot.to_json()));
 
-        match dxclrecorder::record(host.into(), port, call.into(), handler, rx)
-            .join()
-            .unwrap()
-        {
+        let rec = dxclrecorder::record(host.into(), port, call.into(), handler).unwrap();
+        let recorder: Arc<Mutex<dxclrecorder::Recorder>> = Arc::new(Mutex::new(rec));
+
+        let rec = recorder.clone();
+        ctrlc::set_handler(move || {
+            println!("Ctrl-C caught");
+            rec.lock().unwrap().request_stop();
+        })
+        .expect("Failed to listen on Ctrl-C");
+
+        let result;
+        loop {
+            {
+                let mut r = recorder.lock().unwrap();
+                if !r.is_running() {
+                    result = r.join();
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(250))
+        }
+
+        match result {
             Ok(_) => {
                 retval = 0;
             }

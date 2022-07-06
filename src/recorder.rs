@@ -2,7 +2,7 @@ use std::fmt;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::str;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::thread::JoinHandle;
@@ -43,6 +43,40 @@ enum State {
     Parse,
 }
 
+pub struct Recorder {
+    /// Host of the cluster server
+    pub host: String,
+
+    /// Port of the cluster server
+    pub port: u16,
+
+    /// Callsign to use for authentication
+    pub callsign: String,
+
+    /// True if the recorder shall run, false if the recorder shall stop its execution
+    run: Arc<AtomicBool>,
+
+    /// Handle to the recorder thread
+    handle: Option<JoinHandle<Result<(), RecordError>>>,
+}
+
+impl Recorder {
+    /// Request the stop of the recorder.
+    pub fn request_stop(&self) {
+        self.run.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Join the recorder to get the result.
+    pub fn join(&mut self) -> Result<(), RecordError> {
+        self.handle.take().unwrap().join().unwrap()
+    }
+
+    /// Check if the recorder is running.
+    pub fn is_running(&mut self) -> bool {
+        self.run.load(Ordering::Relaxed)
+    }
+}
+
 /// Record data from dx cluster.
 ///
 /// ## Arguments
@@ -55,29 +89,36 @@ enum State {
 ///
 /// ## Result
 ///
-/// Returns a thread handle to join for the result.
-/// The result shall be `Ok(_)`, if the thread has been stopped on request.
-/// An `Err(RecordError)` is returned in case something went wrong.
+/// The result shall be `Ok(Recorder)` if the recorder has been started.
+/// An `Err(RecordError)` shall be returned in case something went wrong while initialization.
 pub fn record(
     host: String,
     port: u16,
     callsign: String,
     callback: Arc<dyn Fn(dxclparser::Spot) + Send + Sync>,
-    signal: mpsc::Receiver<()>,
-) -> JoinHandle<Result<(), RecordError>> {
+) -> Result<Recorder, RecordError> {
+    let exec = Arc::new(AtomicBool::new(true));
+
     let thdname = format!("{}@{}:{}", callsign, host, port);
+    let constring = format!("{}:{}", host, port);
 
-    thread::Builder::new()
+    let call = callsign.clone();
+    let flag = exec.clone();
+    let thd = thread::Builder::new()
         .name(thdname)
-        .spawn(move || {
-            let constring = format!("{}:{}", host, port);
-
-            match TcpStream::connect(&constring) {
-                Ok(stream) => run(stream, callback, signal, &callsign),
-                Err(_) => Err(RecordError::ConnectionError),
-            }
+        .spawn(move || match TcpStream::connect(&constring) {
+            Ok(stream) => run(stream, callback, flag, &call),
+            Err(_) => Err(RecordError::ConnectionError),
         })
-        .expect("Failed to spawn thread")
+        .map_err(|_| RecordError::InternalError)?;
+
+    Ok(Recorder {
+        host,
+        port,
+        callsign,
+        run: exec,
+        handle: Some(thd),
+    })
 }
 
 /// Run the client.
@@ -86,12 +127,12 @@ pub fn record(
 fn run(
     mut stream: TcpStream,
     callback: Arc<dyn Fn(dxclparser::Spot)>,
-    signal: mpsc::Receiver<()>,
+    signal: Arc<AtomicBool>,
     callsign: &str,
 ) -> Result<(), RecordError> {
     // Enable timeout of tcp stream
     stream
-        .set_read_timeout(Some(Duration::new(0, 500_000_000)))
+        .set_read_timeout(Some(Duration::new(0, 250_000_000)))
         .map_err(|_| RecordError::InternalError)?;
 
     let mut reader = BufReader::new(stream.try_clone().map_err(|_| RecordError::InternalError)?);
@@ -119,7 +160,7 @@ fn run(
             }
             ret => {
                 // Check for signal to stop thread
-                if signal.try_recv().is_ok() {
+                if !signal.load(Ordering::Relaxed) {
                     res = Ok(());
                     stream
                         .shutdown(std::net::Shutdown::Both)

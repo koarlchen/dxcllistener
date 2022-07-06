@@ -1,4 +1,4 @@
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, Mutex};
 
 fn main() {
     let host1 = "example.com";
@@ -9,27 +9,43 @@ fn main() {
 
     let call = "INVALID";
 
+    // Handler for new spots
     let handler: Arc<dyn Fn(dxclparser::Spot) + Send + Sync> =
         Arc::new(|spot| println!("{}", spot.to_json()));
 
-    let mut sender: Vec<mpsc::Sender<()>> = Vec::new();
-    let (tx1, rx1) = mpsc::channel();
-    sender.push(tx1);
-    let (tx2, rx2) = mpsc::channel();
-    sender.push(tx2);
+    // Create two recorders
+    let recorder: Arc<Mutex<Vec<dxclrecorder::Recorder>>> = Arc::new(Mutex::new(Vec::new()));
+    recorder
+        .lock()
+        .unwrap()
+        .push(dxclrecorder::record(host1.into(), port1, call.into(), handler.clone()).unwrap());
+    recorder
+        .lock()
+        .unwrap()
+        .push(dxclrecorder::record(host2.into(), port2, call.into(), handler).unwrap());
 
-    let rec1 = dxclrecorder::record(host1.into(), port1, call.into(), handler.clone(), rx1);
-    let rec2 = dxclrecorder::record(host2.into(), port2, call.into(), handler, rx2);
-
+    // Register ctrl-c handler to stop threads
+    let recs = recorder.clone();
     ctrlc::set_handler(move || {
         println!("Ctrl-C caught");
-        for tx in sender.iter() {
-            tx.send(()).expect("Failed to send signal on channel");
+        for r in recs.lock().unwrap().iter() {
+            r.request_stop()
         }
-        sender.clear();
     })
     .expect("Failed to listen on Ctrl-C");
 
-    rec1.join().unwrap().unwrap();
-    rec2.join().unwrap().unwrap();
+    loop {
+        let mut run = false;
+        for rec in recorder.lock().unwrap().iter_mut() {
+            if !rec.is_running() {
+                rec.join().unwrap();
+            } else {
+                run = true;
+            }
+        }
+        if !run {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250))
+    }
 }
