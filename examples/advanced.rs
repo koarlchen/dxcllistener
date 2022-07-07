@@ -38,7 +38,7 @@ fn main() {
         let mut run = false;
         for rec in recorder.lock().unwrap().iter_mut() {
             if !rec.is_running() {
-                rec.join().unwrap();
+                rec.join();
             } else {
                 run = true;
             }

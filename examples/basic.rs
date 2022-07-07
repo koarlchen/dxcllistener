@@ -28,19 +28,18 @@ fn main() {
         })
         .expect("Failed to listen on Ctrl-C");
 
-        let result;
         loop {
             {
                 let mut r = recorder.lock().unwrap();
                 if !r.is_running() {
-                    result = r.join();
+                    r.join();
                     break;
                 }
             }
             std::thread::sleep(std::time::Duration::from_millis(250))
         }
 
-        match result {
+        match recorder.lock().unwrap().result.as_ref().unwrap() {
             Ok(_) => {
                 retval = 0;
             }
@@ -48,7 +47,7 @@ fn main() {
                 eprintln!("{}", err);
                 retval = 1;
             }
-        }
+        };
     }
 
     process::exit(retval);

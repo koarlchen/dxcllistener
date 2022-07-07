@@ -53,6 +53,9 @@ pub struct Recorder {
     /// Callsign to use for authentication
     pub callsign: String,
 
+    /// Result of finished thread.
+    pub result: Option<Result<(), RecordError>>,
+
     /// True if the recorder shall run, false if the recorder shall stop its execution
     run: Arc<AtomicBool>,
 
@@ -67,12 +70,12 @@ impl Recorder {
     }
 
     /// Join the recorder to get the result.
-    pub fn join(&mut self) -> Result<(), RecordError> {
-        self.handle.take().unwrap().join().unwrap()
+    pub fn join(&mut self) {
+        self.result = Some(self.handle.take().unwrap().join().unwrap());
     }
 
     /// Check if the recorder is running.
-    pub fn is_running(&mut self) -> bool {
+    pub fn is_running(&self) -> bool {
         self.run.load(Ordering::Relaxed)
     }
 }
@@ -108,7 +111,10 @@ pub fn record(
         .name(thdname)
         .spawn(move || match TcpStream::connect(&constring) {
             Ok(stream) => run(stream, callback, flag, &call),
-            Err(_) => Err(RecordError::ConnectionError),
+            Err(_) => {
+                flag.store(false, Ordering::Relaxed);
+                Err(RecordError::ConnectionError)
+            }
         })
         .map_err(|_| RecordError::InternalError)?;
 
@@ -116,6 +122,7 @@ pub fn record(
         host,
         port,
         callsign,
+        result: None,
         run: exec,
         handle: Some(thd),
     })
@@ -138,7 +145,7 @@ fn run(
     let mut reader = BufReader::new(stream.try_clone().map_err(|_| RecordError::InternalError)?);
 
     let res: Result<(), RecordError>;
-    let mut timeout_counter = 10;
+    let mut timeout_counter = 20;
     let mut state = State::Auth;
 
     // Line buffer
@@ -211,6 +218,9 @@ fn run(
         }
     }
 
+    if res.is_err() {
+        signal.store(false, Ordering::Relaxed);
+    }
     res
 }
 
