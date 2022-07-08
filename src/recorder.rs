@@ -169,9 +169,6 @@ fn run(
                 // Check for signal to stop thread
                 if !signal.load(Ordering::Relaxed) {
                     res = Ok(());
-                    stream
-                        .shutdown(std::net::Shutdown::Both)
-                        .map_err(|_| RecordError::InternalError)?;
                     break;
                 }
 
