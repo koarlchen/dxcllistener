@@ -142,14 +142,28 @@ fn run(
     callsign: &str,
 ) -> Result<(), ListenError> {
     // Enable timeout of tcp stream
-    stream
-        .set_read_timeout(Some(Duration::new(0, 250_000_000)))
-        .map_err(|_| ListenError::InternalError)?;
+    if stream.set_read_timeout(Some(Duration::new(0, 250_000_000))).is_err() {
+        signal.store(false, Ordering::Relaxed);
+        return Err(ListenError::InternalError);
+    }
 
-    let mut reader = BufReader::new(stream.try_clone().map_err(|_| ListenError::InternalError)?);
+    // Create reader
+    let str = match stream.try_clone() {
+        Ok(stream) => stream,
+        Err(_) => {
+            signal.store(false, Ordering::Relaxed);
+            return Err(ListenError::InternalError);
+        }
+    };
+    let mut reader = BufReader::new(str);
 
+    // Returned result
     let res: Result<(), ListenError>;
+
+    // Number of timeouts until return with error
     let mut timeout_counter = 20;
+
+    // Current state of connection
     let mut state = State::Auth;
 
     // Line buffer
