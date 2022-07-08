@@ -15,22 +15,26 @@ fn main() {
         let port = args[2].parse::<u16>().unwrap();
         let call = &args[3];
 
+        // Handler for new spots
         let handler: Arc<dyn Fn(dxclparser::Spot) + Send + Sync> =
             Arc::new(|spot| println!("{}", spot.to_json()));
 
-        let rec = dxclrecorder::record(host.into(), port, call.into(), handler).unwrap();
-        let recorder: Arc<Mutex<dxclrecorder::Recorder>> = Arc::new(Mutex::new(rec));
+        // Create listener
+        let rec = dxcllistener::listen(host.into(), port, call.into(), handler).unwrap();
+        let listener: Arc<Mutex<dxcllistener::Listener>> = Arc::new(Mutex::new(rec));
 
-        let rec = recorder.clone();
+        // Register ctrl-c handler to stop threads
+        let rec = listener.clone();
         ctrlc::set_handler(move || {
             println!("Ctrl-C caught");
             rec.lock().unwrap().request_stop();
         })
         .expect("Failed to listen on Ctrl-C");
 
+        // Actively wait until both listeners finished their execution
         loop {
             {
-                let mut r = recorder.lock().unwrap();
+                let mut r = listener.lock().unwrap();
                 if !r.is_running() {
                     r.join();
                     break;
@@ -39,7 +43,8 @@ fn main() {
             std::thread::sleep(std::time::Duration::from_millis(250))
         }
 
-        match recorder.lock().unwrap().result.as_ref().unwrap() {
+        // Evaluate returned result of listener
+        match listener.lock().unwrap().result.as_ref().unwrap() {
             Ok(_) => {
                 retval = 0;
             }

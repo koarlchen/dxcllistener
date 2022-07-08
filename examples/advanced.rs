@@ -13,19 +13,19 @@ fn main() {
     let handler: Arc<dyn Fn(dxclparser::Spot) + Send + Sync> =
         Arc::new(|spot| println!("{}", spot.to_json()));
 
-    // Create two recorders
-    let recorder: Arc<Mutex<Vec<dxclrecorder::Recorder>>> = Arc::new(Mutex::new(Vec::new()));
-    recorder
+    // Create two listener
+    let listeners: Arc<Mutex<Vec<dxcllistener::Listener>>> = Arc::new(Mutex::new(Vec::new()));
+    listeners
         .lock()
         .unwrap()
-        .push(dxclrecorder::record(host1.into(), port1, call.into(), handler.clone()).unwrap());
-    recorder
+        .push(dxcllistener::listen(host1.into(), port1, call.into(), handler.clone()).unwrap());
+    listeners
         .lock()
         .unwrap()
-        .push(dxclrecorder::record(host2.into(), port2, call.into(), handler).unwrap());
+        .push(dxcllistener::listen(host2.into(), port2, call.into(), handler).unwrap());
 
     // Register ctrl-c handler to stop threads
-    let recs = recorder.clone();
+    let recs = listeners.clone();
     ctrlc::set_handler(move || {
         println!("Ctrl-C caught");
         for r in recs.lock().unwrap().iter() {
@@ -34,9 +34,10 @@ fn main() {
     })
     .expect("Failed to listen on Ctrl-C");
 
+    // Actively wait until both listeners finished their execution
     loop {
         let mut run = false;
-        for rec in recorder.lock().unwrap().iter_mut() {
+        for rec in listeners.lock().unwrap().iter_mut() {
             if !rec.is_running() {
                 rec.join();
             } else {

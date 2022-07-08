@@ -8,9 +8,9 @@ use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-/// Possible errors while recording
+/// Possible errors while listening
 #[derive(Debug, PartialEq)]
-pub enum RecordError {
+pub enum ListenError {
     /// Unknown error
     UnknownError,
 
@@ -27,9 +27,9 @@ pub enum RecordError {
     InternalError,
 }
 
-impl fmt::Display for RecordError {
+impl fmt::Display for ListenError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Error while recording: {:?}", self)
+        write!(f, "Error while listening: {:?}", self)
     }
 }
 
@@ -43,7 +43,7 @@ enum State {
     Parse,
 }
 
-pub struct Recorder {
+pub struct Listener {
     /// Host of the cluster server
     pub host: String,
 
@@ -53,34 +53,35 @@ pub struct Recorder {
     /// Callsign to use for authentication
     pub callsign: String,
 
-    /// Result of finished thread.
-    pub result: Option<Result<(), RecordError>>,
+    /// Result of finished thread
+    pub result: Option<Result<(), ListenError>>,
 
-    /// True if the recorder shall run, false if the recorder shall stop its execution
+    /// True if the listener shall run, false if the listener shall stop its execution.
+    /// May already be false if an error occurred while listening.
     run: Arc<AtomicBool>,
 
-    /// Handle to the recorder thread
-    handle: Option<JoinHandle<Result<(), RecordError>>>,
+    /// Handle to the listener thread
+    handle: Option<JoinHandle<Result<(), ListenError>>>,
 }
 
-impl Recorder {
-    /// Request the stop of the recorder.
+impl Listener {
+    /// Request the stop of the listener
     pub fn request_stop(&self) {
         self.run.store(false, Ordering::Relaxed);
     }
 
-    /// Join the recorder to get the result.
+    /// Join the listener to get the result
     pub fn join(&mut self) {
         self.result = Some(self.handle.take().unwrap().join().unwrap());
     }
 
-    /// Check if the recorder is running.
+    /// Check if the listener is running
     pub fn is_running(&self) -> bool {
         self.run.load(Ordering::Relaxed)
     }
 }
 
-/// Record data from dx cluster.
+/// Listen for data from dx cluster.
 ///
 /// ## Arguments
 ///
@@ -88,18 +89,17 @@ impl Recorder {
 /// * `port`: Port of server
 /// * `callsign`: Callsign to use for authentication
 /// * `callback`: Function callback that will be called each time a new spot is parsed successfully
-/// * `signal`: Signal to request execution stop of the thread
 ///
 /// ## Result
 ///
-/// The result shall be `Ok(Recorder)` if the recorder has been started.
-/// An `Err(RecordError)` shall be returned in case something went wrong while initialization.
-pub fn record(
+/// The result shall be `Ok(Listener)` if the listener has been started.
+/// An `Err(ListenError)` shall be returned in case something went wrong while initialization.
+pub fn listen(
     host: String,
     port: u16,
     callsign: String,
     callback: Arc<dyn Fn(dxclparser::Spot) + Send + Sync>,
-) -> Result<Recorder, RecordError> {
+) -> Result<Listener, ListenError> {
     let exec = Arc::new(AtomicBool::new(true));
 
     let thdname = format!("{}@{}:{}", callsign, host, port);
@@ -113,12 +113,12 @@ pub fn record(
             Ok(stream) => run(stream, callback, flag, &call),
             Err(_) => {
                 flag.store(false, Ordering::Relaxed);
-                Err(RecordError::ConnectionError)
+                Err(ListenError::ConnectionError)
             }
         })
-        .map_err(|_| RecordError::InternalError)?;
+        .map_err(|_| ListenError::InternalError)?;
 
-    Ok(Recorder {
+    Ok(Listener {
         host,
         port,
         callsign,
@@ -136,15 +136,15 @@ fn run(
     callback: Arc<dyn Fn(dxclparser::Spot)>,
     signal: Arc<AtomicBool>,
     callsign: &str,
-) -> Result<(), RecordError> {
+) -> Result<(), ListenError> {
     // Enable timeout of tcp stream
     stream
         .set_read_timeout(Some(Duration::new(0, 250_000_000)))
-        .map_err(|_| RecordError::InternalError)?;
+        .map_err(|_| ListenError::InternalError)?;
 
-    let mut reader = BufReader::new(stream.try_clone().map_err(|_| RecordError::InternalError)?);
+    let mut reader = BufReader::new(stream.try_clone().map_err(|_| ListenError::InternalError)?);
 
-    let res: Result<(), RecordError>;
+    let res: Result<(), ListenError>;
     let mut timeout_counter = 20;
     let mut state = State::Auth;
 
@@ -157,12 +157,12 @@ fn run(
         match reader.read_line(&mut line) {
             Ok(0) => {
                 // EOF
-                res = Err(RecordError::ConnectionLost);
+                res = Err(ListenError::ConnectionLost);
                 break;
             }
             Err(err) if err.kind() != std::io::ErrorKind::WouldBlock => {
                 // Catch all errors, except for timeout
-                res = Err(RecordError::UnknownError);
+                res = Err(ListenError::UnknownError);
                 break;
             }
             ret => {
@@ -190,7 +190,7 @@ fn run(
                                 timeout_counter -= 1;
                                 // Prevent endless loop, cancel authentication after a few timeouts
                                 if timeout_counter == 0 {
-                                    res = Err(RecordError::AuthenticationError);
+                                    res = Err(ListenError::AuthenticationError);
                                     break;
                                 }
                             } else {
@@ -242,16 +242,16 @@ fn is_auth_token(token: &str) -> bool {
 
 /// Send a string through tcp stream.
 /// Appends '\r\n' to the string before sending.
-fn send_line(stream: &mut TcpStream, data: &str) -> Result<(), RecordError> {
+fn send_line(stream: &mut TcpStream, data: &str) -> Result<(), ListenError> {
     match stream.write(format!("{}\r\n", data).as_bytes()) {
         Ok(0) => {
             // EOF
-            Err(RecordError::ConnectionLost)
+            Err(ListenError::ConnectionLost)
         }
         Ok(_) => Ok(()),
         Err(_) => {
             // Error
-            Err(RecordError::UnknownError)
+            Err(ListenError::UnknownError)
         }
     }
 }
