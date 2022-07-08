@@ -66,7 +66,7 @@ pub struct Recorder {
 impl Recorder {
     /// Request the stop of the recorder.
     pub fn request_stop(&self) {
-        self.run.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.run.store(false, Ordering::Relaxed);
     }
 
     /// Join the recorder to get the result.
@@ -185,7 +185,7 @@ fn run(
                                 res = Err(err);
                                 break;
                             }
-                            // Swith state to parse incoming spots
+                            // Switch state to parse incoming spots
                             state = State::Parse;
                         } else {
                             // Check for timeout while authentication
