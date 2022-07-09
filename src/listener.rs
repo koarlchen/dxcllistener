@@ -113,12 +113,13 @@ pub fn listen(
     let flag = exec.clone();
     let thd = thread::Builder::new()
         .name(thdname)
-        .spawn(move || match TcpStream::connect(&constring) {
-            Ok(stream) => run(stream, callback, flag, &call),
-            Err(_) => {
-                flag.store(false, Ordering::Relaxed);
-                Err(ListenError::ConnectionError)
-            }
+        .spawn(move || {
+            let res = match TcpStream::connect(&constring) {
+                Ok(stream) => run(stream, callback, flag.clone(), &call),
+                Err(_) => Err(ListenError::ConnectionError),
+            };
+            flag.store(false, Ordering::Relaxed);
+            res
         })
         .map_err(|_| ListenError::InternalError)?;
 
@@ -142,20 +143,12 @@ fn run(
     callsign: &str,
 ) -> Result<(), ListenError> {
     // Enable timeout of tcp stream
-    if stream.set_read_timeout(Some(Duration::new(0, 250_000_000))).is_err() {
-        signal.store(false, Ordering::Relaxed);
-        return Err(ListenError::InternalError);
-    }
+    stream
+        .set_read_timeout(Some(Duration::new(0, 250_000_000)))
+        .map_err(|_| ListenError::InternalError)?;
 
     // Create reader
-    let str = match stream.try_clone() {
-        Ok(stream) => stream,
-        Err(_) => {
-            signal.store(false, Ordering::Relaxed);
-            return Err(ListenError::InternalError);
-        }
-    };
-    let mut reader = BufReader::new(str);
+    let mut reader = BufReader::new(stream.try_clone().map_err(|_| ListenError::InternalError)?);
 
     // Returned result
     let res: Result<(), ListenError>;
@@ -233,9 +226,6 @@ fn run(
         }
     }
 
-    if res.is_err() {
-        signal.store(false, Ordering::Relaxed);
-    }
     res
 }
 
