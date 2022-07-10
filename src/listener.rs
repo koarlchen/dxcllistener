@@ -29,6 +29,9 @@ pub enum ListenError {
 
     /// Internal error
     InternalError,
+
+    /// Thread was already joined
+    AlreadyJoined,
 }
 
 impl fmt::Display for ListenError {
@@ -57,9 +60,6 @@ pub struct Listener {
     /// Callsign to use for authentication
     pub callsign: String,
 
-    /// Result of finished thread
-    pub result: Option<Result<(), ListenError>>,
-
     /// True if the listener shall run, false if the listener shall stop its execution.
     /// May already be false if an error occurred while listening.
     run: Arc<AtomicBool>,
@@ -69,14 +69,18 @@ pub struct Listener {
 }
 
 impl Listener {
-    /// Request the stop of the listener
+    /// Request the stop of the listener.
+    /// The timespan between the request and the actual stop of the trigger may take up to 250 ms.
     pub fn request_stop(&self) {
         self.run.store(false, Ordering::Relaxed);
     }
 
     /// Join the listener to get the result
-    pub fn join(&mut self) {
-        self.result = Some(self.handle.take().unwrap().join().unwrap());
+    pub fn join(&mut self) -> Result<(), ListenError> {
+        match self.handle.take() {
+            Some(h) => h.join().unwrap(),
+            None => Err(ListenError::AlreadyJoined),
+        }
     }
 
     /// Check if the listener is running
@@ -127,7 +131,6 @@ pub fn listen(
         host,
         port,
         callsign,
-        result: None,
         run: exec,
         handle: Some(thd),
     })

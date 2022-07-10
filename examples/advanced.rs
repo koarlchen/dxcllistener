@@ -1,4 +1,5 @@
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 fn main() {
     let host1 = "example.com";
@@ -13,40 +14,51 @@ fn main() {
     let handler: Arc<dyn Fn(dxclparser::Spot) + Send + Sync> =
         Arc::new(|spot| println!("{}", spot.to_json()));
 
+    let signal = Arc::new(AtomicBool::new(true));
+
     // Create two listener
-    let listeners: Arc<Mutex<Vec<dxcllistener::Listener>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut listeners: Vec<dxcllistener::Listener> = Vec::new();
     listeners
-        .lock()
-        .unwrap()
         .push(dxcllistener::listen(host1.into(), port1, call.into(), handler.clone()).unwrap());
-    listeners
-        .lock()
-        .unwrap()
-        .push(dxcllistener::listen(host2.into(), port2, call.into(), handler).unwrap());
+    listeners.push(dxcllistener::listen(host2.into(), port2, call.into(), handler).unwrap());
 
     // Register ctrl-c handler to stop threads
-    let recs = listeners.clone();
+    let sig = signal.clone();
     ctrlc::set_handler(move || {
         println!("Ctrl-C caught");
-        for r in recs.lock().unwrap().iter() {
-            r.request_stop()
-        }
+        sig.store(false, Ordering::Relaxed);
     })
     .expect("Failed to listen on Ctrl-C");
 
     // Actively wait until both listeners finished their execution
-    loop {
-        let mut run = false;
-        for rec in listeners.lock().unwrap().iter_mut() {
-            if !rec.is_running() {
-                rec.join();
-            } else {
-                run = true;
+    while listeners.len() > 0 {
+        // Check for application stop request
+        if !signal.load(Ordering::Relaxed) {
+            // Send stop request to listeners
+            for l in listeners.iter_mut() {
+                l.request_stop();
             }
-        }
-        if !run {
+            // Join listeners
+            for l in listeners.iter_mut() {
+                l.join().unwrap();
+            }
             break;
         }
+
+        // Check for unexpectedly stopped listeners
+        listeners.retain_mut(|l| {
+            if !l.is_running() {
+                let res = l.join().unwrap_err();
+                println!(
+                    "Listener {}@{}:{} stopped unexpectedly ({})",
+                    l.callsign, l.host, l.port, res
+                );
+                false
+            } else {
+                true
+            }
+        });
+
         std::thread::sleep(std::time::Duration::from_millis(250))
     }
 }

@@ -1,6 +1,6 @@
 use std::env;
 use std::process;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -20,39 +20,16 @@ fn main() {
             Arc::new(|spot| println!("{}", spot.to_json()));
 
         // Create listener
-        let rec = dxcllistener::listen(host.into(), port, call.into(), handler).unwrap();
-        let listener: Arc<Mutex<dxcllistener::Listener>> = Arc::new(Mutex::new(rec));
+        let mut listener = dxcllistener::listen(host.into(), port, call.into(), handler).unwrap();
 
-        // Register ctrl-c handler to stop threads
-        let rec = listener.clone();
-        ctrlc::set_handler(move || {
-            println!("Ctrl-C caught");
-            rec.lock().unwrap().request_stop();
-        })
-        .expect("Failed to listen on Ctrl-C");
-
-        // Actively wait until both listeners finished their execution
-        loop {
-            {
-                let mut r = listener.lock().unwrap();
-                if !r.is_running() {
-                    r.join();
-                    break;
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_millis(250))
-        }
-
-        // Evaluate returned result of listener
-        match listener.lock().unwrap().result.as_ref().unwrap() {
-            Ok(_) => {
-                retval = 0;
-            }
-            Err(err) => {
-                eprintln!("{}", err);
+        // Join listener thread
+        match listener.join() {
+            Ok(_) => retval = 0,
+            Err(e) => {
+                eprintln!("{}", e);
                 retval = 1;
             }
-        };
+        }
     }
 
     process::exit(retval);
