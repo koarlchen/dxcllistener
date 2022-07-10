@@ -7,7 +7,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::str;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -32,6 +32,9 @@ pub enum ListenError {
 
     /// Thread was already joined
     AlreadyJoined,
+
+    /// Receiver of parsed spots lost
+    ReceiverLost,
 }
 
 impl fmt::Display for ListenError {
@@ -96,7 +99,7 @@ impl Listener {
 /// * `host`: Host of server
 /// * `port`: Port of server
 /// * `callsign`: Callsign to use for authentication
-/// * `callback`: Function callback that will be called each time a new spot is parsed successfully
+/// * `channel`: Communication channel where to send received spots to
 ///
 /// ## Result
 ///
@@ -106,7 +109,7 @@ pub fn listen(
     host: String,
     port: u16,
     callsign: String,
-    callback: Arc<dyn Fn(dxclparser::Spot) + Send + Sync>,
+    channel: mpsc::Sender<dxclparser::Spot>,
 ) -> Result<Listener, ListenError> {
     let exec = Arc::new(AtomicBool::new(true));
 
@@ -119,7 +122,7 @@ pub fn listen(
         .name(thdname)
         .spawn(move || {
             let res = match TcpStream::connect(&constring) {
-                Ok(stream) => run(stream, callback, flag.clone(), &call),
+                Ok(stream) => run(stream, channel, flag.clone(), &call),
                 Err(_) => Err(ListenError::ConnectionError),
             };
             flag.store(false, Ordering::Relaxed);
@@ -141,8 +144,8 @@ pub fn listen(
 /// Afterwards parse received spot and pass the parsed information to the callback function.
 fn run(
     mut stream: TcpStream,
-    callback: Arc<dyn Fn(dxclparser::Spot)>,
-    signal: Arc<AtomicBool>,
+    callback: mpsc::Sender<dxclparser::Spot>,
+    channel: Arc<AtomicBool>,
     callsign: &str,
 ) -> Result<(), ListenError> {
     // Enable timeout of tcp stream
@@ -181,7 +184,7 @@ fn run(
             }
             ret => {
                 // Check for signal to stop thread
-                if !signal.load(Ordering::Relaxed) {
+                if !channel.load(Ordering::Relaxed) {
                     res = Ok(());
                     break;
                 }
@@ -219,7 +222,7 @@ fn run(
                         if ret.is_ok() {
                             let clean = clean_line(&line);
                             if let Ok(spot) = dxclparser::parse(clean) {
-                                callback(spot);
+                                callback.send(spot).map_err(|_| ListenError::ReceiverLost)?;
                             }
                             line.clear();
                         }

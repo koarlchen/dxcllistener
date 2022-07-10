@@ -1,36 +1,29 @@
 use std::env;
-use std::process;
-use std::sync::Arc;
+use std::sync::mpsc;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
-    let retval;
 
     if args.len() != 4 {
         eprintln!("Invalid number of arguments.");
         eprintln!("Usage: {} <host> <port> <call>", args[0]);
-        retval = 1;
     } else {
         let host = &args[1];
         let port = args[2].parse::<u16>().unwrap();
         let call = &args[3];
 
-        // Handler for new spots
-        let handler: Arc<dyn Fn(dxclparser::Spot) + Send + Sync> =
-            Arc::new(|spot| println!("{}", spot.to_json()));
+        // Create communication channel
+        let (tx, rx) = mpsc::channel();
 
         // Create listener
-        let mut listener = dxcllistener::listen(host.into(), port, call.into(), handler).unwrap();
+        let mut listener = dxcllistener::listen(host.into(), port, call.into(), tx).unwrap();
 
-        // Join listener thread
-        match listener.join() {
-            Ok(_) => retval = 0,
-            Err(e) => {
-                eprintln!("{}", e);
-                retval = 1;
-            }
+        // Process spots
+        while let Ok(spot) = rx.recv() {
+            println!("{}", spot.to_json());
         }
-    }
 
-    process::exit(retval);
+        // Evaluate error reason why the listener stopped unexpectedly
+        eprintln!("{}", listener.join().unwrap_err());
+    }
 }

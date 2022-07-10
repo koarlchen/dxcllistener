@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
+use std::thread;
 
 fn main() {
     let host1 = "example.com";
@@ -10,17 +11,23 @@ fn main() {
 
     let call = "INVALID";
 
-    // Handler for new spots
-    let handler: Arc<dyn Fn(dxclparser::Spot) + Send + Sync> =
-        Arc::new(|spot| println!("{}", spot.to_json()));
+    // Communication channel between listeners and receiver
+    let (tx, rx) = mpsc::channel();
 
+    // Stop signal
     let signal = Arc::new(AtomicBool::new(true));
 
     // Create two listener
     let mut listeners: Vec<dxcllistener::Listener> = Vec::new();
-    listeners
-        .push(dxcllistener::listen(host1.into(), port1, call.into(), handler.clone()).unwrap());
-    listeners.push(dxcllistener::listen(host2.into(), port2, call.into(), handler).unwrap());
+    listeners.push(dxcllistener::listen(host1.into(), port1, call.into(), tx.clone()).unwrap());
+    listeners.push(dxcllistener::listen(host2.into(), port2, call.into(), tx).unwrap());
+
+    // Handle incoming spots
+    thread::spawn(move || {
+        while let Ok(spot) = rx.recv() {
+            println!("{}", spot.to_json());
+        }
+    });
 
     // Register ctrl-c handler to stop threads
     let sig = signal.clone();
@@ -30,15 +37,12 @@ fn main() {
     })
     .expect("Failed to listen on Ctrl-C");
 
-    // Actively wait until both listeners finished their execution
     while listeners.len() > 0 {
         // Check for application stop request
         if !signal.load(Ordering::Relaxed) {
-            // Send stop request to listeners
             for l in listeners.iter_mut() {
                 l.request_stop();
             }
-            // Join listeners
             for l in listeners.iter_mut() {
                 l.join().unwrap();
             }
@@ -59,6 +63,6 @@ fn main() {
             }
         });
 
-        std::thread::sleep(std::time::Duration::from_millis(250))
+        std::thread::sleep(std::time::Duration::from_millis(250));
     }
 }
