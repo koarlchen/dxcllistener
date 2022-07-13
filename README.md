@@ -2,7 +2,7 @@
 
 A listener to listen for new spots from a DX cluster.
 
-The received spots will be parsed by the [dxclparser](https://github.com/koarlchen/dxclparser). See `example/` folder for exemplary usage.
+Each received spot will be parsed and sent to registered receivers. See `example/` folder for exemplary usage.
 
 
 ## Supported DX-Clusters
@@ -10,3 +10,4 @@ The received spots will be parsed by the [dxclparser](https://github.com/koarlch
 - DXSpider
 - AR-Cluster
 - CC Cluster
+- Reverse Beacon Network
