@@ -5,7 +5,6 @@
 use std::fmt;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
-use std::str;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
