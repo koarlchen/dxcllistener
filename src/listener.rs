@@ -89,53 +89,62 @@ impl Listener {
     pub fn is_running(&self) -> bool {
         self.run.load(Ordering::Relaxed)
     }
-}
 
-/// Listen for data from dx cluster.
-///
-/// ## Arguments
-///
-/// * `host`: Host of server
-/// * `port`: Port of server
-/// * `callsign`: Callsign to use for authentication
-/// * `channel`: Communication channel where to send received spots to
-///
-/// ## Result
-///
-/// The result shall be `Ok(Listener)` if the listener has been started.
-/// An `Err(ListenError)` shall be returned in case something went wrong while initialization.
-pub fn listen(
-    host: String,
-    port: u16,
-    callsign: String,
-    channel: mpsc::Sender<dxclparser::Spot>,
-) -> Result<Listener, ListenError> {
-    let exec = Arc::new(AtomicBool::new(true));
+    /// Create new instace of Listener
+    ///
+    /// ## Arguments
+    ///
+    /// * `host`: Host of server
+    /// * `port`: Port of server
+    /// * `callsign`: Callsign to use for authentication
+    ///
+    /// ## Result
+    ///
+    /// New instance of a Listener.
+    pub fn new(host: String, port: u16, callsign: String) -> Self {
+        Self {
+            host,
+            port,
+            callsign,
+            run: Arc::new(AtomicBool::new(true)),
+            handle: None,
+        }
+    }
 
-    let thdname = format!("{}@{}:{}", callsign, host, port);
-    let constring = format!("{}:{}", host, port);
+    /// Listen for data from dx cluster.
+    ///
+    /// ## Arguments
+    ///
+    /// * `channel`: Communication channel where to send received spots to
+    ///
+    /// ## Result
+    ///
+    /// The result shall be `Ok(())` if the listener has been started.
+    /// An `Err(ListenError)` shall be returned in case something went wrong while initialization.
+    pub fn listen(&mut self, channel: mpsc::Sender<dxclparser::Spot>) -> Result<(), ListenError> {
+        self.run.store(true, Ordering::Relaxed);
 
-    let call = callsign.clone();
-    let flag = exec.clone();
-    let thd = thread::Builder::new()
-        .name(thdname)
-        .spawn(move || {
-            let res = match TcpStream::connect(&constring) {
-                Ok(stream) => run(stream, channel, flag.clone(), &call),
-                Err(_) => Err(ListenError::ConnectionError),
-            };
-            flag.store(false, Ordering::Relaxed);
-            res
-        })
-        .map_err(|_| ListenError::InternalError)?;
+        let thdname = format!("{}@{}:{}", self.callsign, self.host, self.port);
+        let constring = format!("{}:{}", self.host, self.port);
 
-    Ok(Listener {
-        host,
-        port,
-        callsign,
-        run: exec,
-        handle: Some(thd),
-    })
+        let call = self.callsign.clone();
+        let flag = self.run.clone();
+        let thd = thread::Builder::new()
+            .name(thdname)
+            .spawn(move || {
+                let res = match TcpStream::connect(&constring) {
+                    Ok(stream) => run(stream, channel, flag.clone(), &call),
+                    Err(_) => Err(ListenError::ConnectionError),
+                };
+                flag.store(false, Ordering::Relaxed);
+                res
+            })
+            .map_err(|_| ListenError::InternalError)?;
+
+        self.handle = Some(thd);
+
+        Ok(())
+    }
 }
 
 /// Run the client.

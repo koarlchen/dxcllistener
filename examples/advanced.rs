@@ -2,25 +2,25 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
 
+use dxcllistener::Listener;
+
 fn main() {
-    let host1 = "example.com";
-    let port1 = 1234;
-
-    let host2 = "example.net";
-    let port2 = 5678;
-
-    let call = "INVALID";
+    // Create two listeners
+    let mut listeners: Vec<dxcllistener::Listener> = vec![
+        Listener::new("example.com".into(), 1234, "INVALID-1".into()),
+        Listener::new("example.net".into(), 5678, "INVALID-2".into()),
+    ];
 
     // Communication channel between listeners and receiver
     let (tx, rx) = mpsc::channel();
 
+    // Start listening for spots
+    for lis in listeners.iter_mut() {
+        lis.listen(tx.clone()).unwrap();
+    }
+
     // Stop signal
     let signal = Arc::new(AtomicBool::new(true));
-
-    // Create two listener
-    let mut listeners: Vec<dxcllistener::Listener> = Vec::new();
-    listeners.push(dxcllistener::listen(host1.into(), port1, call.into(), tx.clone()).unwrap());
-    listeners.push(dxcllistener::listen(host2.into(), port2, call.into(), tx).unwrap());
 
     // Handle incoming spots
     thread::spawn(move || {
@@ -37,7 +37,7 @@ fn main() {
     })
     .expect("Failed to listen on Ctrl-C");
 
-    while listeners.len() > 0 {
+    while !listeners.is_empty() {
         // Check for application stop request
         if !signal.load(Ordering::Relaxed) {
             for l in listeners.iter_mut() {

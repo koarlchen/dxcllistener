@@ -1,6 +1,8 @@
 use std::env;
 use std::sync::mpsc;
 
+use dxcllistener::Listener;
+
 fn main() {
     let args: Vec<String> = env::args().collect();
 
@@ -15,8 +17,9 @@ fn main() {
         // Create communication channel
         let (tx, rx) = mpsc::channel();
 
-        // Create listener
-        let mut listener = dxcllistener::listen(host.into(), port, call.into(), tx).unwrap();
+        // Create and start listener
+        let mut listener = Listener::new(host.into(), port, call.into());
+        listener.listen(tx).unwrap();
 
         // Process spots
         while let Ok(spot) = rx.recv() {
