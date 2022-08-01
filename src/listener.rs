@@ -106,7 +106,7 @@ impl Listener {
             host,
             port,
             callsign,
-            run: Arc::new(AtomicBool::new(true)),
+            run: Arc::new(AtomicBool::new(false)),
             handle: None,
         }
     }
