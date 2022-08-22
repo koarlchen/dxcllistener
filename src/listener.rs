@@ -12,7 +12,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 /// Possible errors while listening
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ListenError {
     /// Unknown error
     UnknownError,
@@ -149,7 +149,7 @@ impl Listener {
 
 /// Run the client.
 /// First, authenticate at server with callsign.
-/// Afterwards parse received spot and pass the parsed information to the callback function.
+/// Afterwards parse received spot and pass the parsed information into the communication channel.
 fn run(
     mut stream: TcpStream,
     callback: mpsc::Sender<dxclparser::Spot>,
