@@ -262,18 +262,10 @@ fn is_auth_token(token: &str) -> bool {
     false
 }
 
-/// Send a string through tcp stream.
-/// Appends '\r\n' to the string before sending.
+/// Send a string through a tcp stream.
+/// Appends '\r\n' to the given string before sending it.
 fn send_line(stream: &mut TcpStream, data: &str) -> Result<(), ListenError> {
-    match stream.write(format!("{}\r\n", data).as_bytes()) {
-        Ok(0) => {
-            // EOF
-            Err(ListenError::ConnectionLost)
-        }
-        Ok(_) => Ok(()),
-        Err(_) => {
-            // Error
-            Err(ListenError::UnknownError)
-        }
-    }
+    stream
+        .write_all(format!("{}\r\n", data).as_bytes())
+        .map_err(|_| ListenError::UnknownError)
 }
