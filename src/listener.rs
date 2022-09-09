@@ -11,6 +11,9 @@ use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+// Authentication tokens sent by cluster servers.
+const AUTH_TOKEN: [&str; 2] = ["login:", "Please enter your call:"];
+
 /// Possible errors while listening
 #[derive(Debug, PartialEq, Eq)]
 pub enum ListenError {
@@ -251,9 +254,7 @@ fn clean_line(line: &str) -> &str {
 
 /// Check if a given string starts with one of the authentication tokens.
 fn is_auth_token(token: &str) -> bool {
-    let auth_keys = ["login:", "Please enter your call:"];
-
-    for key in auth_keys.iter() {
+    for key in AUTH_TOKEN.iter() {
         if token.starts_with(key) {
             return true;
         }
