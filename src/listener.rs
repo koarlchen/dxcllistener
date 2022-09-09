@@ -87,7 +87,7 @@ impl Listener {
         self.run.load(Ordering::Relaxed)
     }
 
-    /// Create new instace of Listener
+    /// Create new instace of `Listener`
     ///
     /// ## Arguments
     ///
@@ -97,7 +97,7 @@ impl Listener {
     ///
     /// ## Result
     ///
-    /// New instance of a Listener.
+    /// New instance of a `Listener`.
     pub fn new(host: String, port: u16, callsign: String) -> Self {
         Self {
             host,
@@ -149,8 +149,8 @@ impl Listener {
 /// Afterwards parse received spot and pass the parsed information into the communication channel.
 fn run(
     mut stream: TcpStream,
-    callback: mpsc::Sender<dxclparser::Spot>,
-    channel: Arc<AtomicBool>,
+    pipe: mpsc::Sender<dxclparser::Spot>,
+    signal: Arc<AtomicBool>,
     callsign: &str,
 ) -> Result<(), ListenError> {
     // Enable timeout of tcp stream
@@ -189,7 +189,7 @@ fn run(
             }
             ret => {
                 // Check for signal to stop thread
-                if !channel.load(Ordering::Relaxed) {
+                if !signal.load(Ordering::Relaxed) {
                     res = Ok(());
                     break;
                 }
@@ -227,7 +227,7 @@ fn run(
                         if ret.is_ok() {
                             let clean = clean_line(&line);
                             if let Ok(spot) = dxclparser::parse(clean) {
-                                callback.send(spot).map_err(|_| ListenError::ReceiverLost)?;
+                                pipe.send(spot).map_err(|_| ListenError::ReceiverLost)?;
                             }
                             line.clear();
                         }
