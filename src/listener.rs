@@ -2,7 +2,6 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-use std::fmt;
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,39 +9,34 @@ use std::sync::{mpsc, Arc};
 use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
+use thiserror::Error;
 
 // Authentication tokens sent by cluster servers.
 const AUTH_TOKEN: [&str; 2] = ["login:", "Please enter your call:"];
 
 /// Possible errors while listening
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Error, Debug)]
 pub enum ListenError {
-    /// Unknown error
+    #[error("unknown error")]
     UnknownError,
 
-    /// Connection to server lost
+    #[error("connection to server lost")]
     ConnectionLost,
 
-    /// Connection error (failed to connect)
+    #[error("failed to connect to server")]
     ConnectionError,
 
-    /// Authentication error
+    #[error("failed to authenticate at server")]
     AuthenticationError,
 
-    /// Internal error
+    #[error("internal error")]
     InternalError,
 
-    /// Thread was already joined
+    #[error("listener was already joined")]
     AlreadyJoined,
 
-    /// Receiver of parsed spots lost
+    #[error("receiver for parsed spots lost")]
     ReceiverLost,
-}
-
-impl fmt::Display for ListenError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Error while listening: {:?}", self)
-    }
 }
 
 /// State of communication

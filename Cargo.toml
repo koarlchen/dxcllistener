@@ -12,6 +12,7 @@ keywords = ["ham", "ham-radio", "dxcluster", "cluster"]
 
 [dependencies]
 dxclparser = "1.0.0"
+thiserror = "1.0.34"
 
 [dev-dependencies]
 ctrlc = "3.2.2"
