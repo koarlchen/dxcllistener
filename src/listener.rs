@@ -6,9 +6,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
-use std::thread;
 use std::thread::JoinHandle;
 use std::time::Duration;
+use std::{fmt, thread};
 use thiserror::Error;
 
 // Authentication tokens sent by cluster servers.
@@ -67,6 +67,12 @@ pub struct Listener {
     handle: Option<JoinHandle<Result<(), ListenError>>>,
 }
 
+impl fmt::Display for Listener {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}@{}:{}", self.callsign, self.host, self.port)
+    }
+}
+
 impl Listener {
     /// Request the stop of the listener.
     /// The timespan between the request and the actual stop of the trigger may take up to 250 ms.
@@ -116,31 +122,34 @@ impl Listener {
     ///
     /// ## Result
     ///
-    /// The result shall be `Ok(())` if the listener has been started.
-    /// An `Err(ListenError)` shall be returned in case something went wrong while initialization.
+    /// The result shall be `Ok(())` if the listener is connected and is waiting for spots.
+    /// An `Err(ListenError)` shall be returned in case something went wrong while connecting.
     pub fn listen(&mut self, channel: mpsc::Sender<dxclparser::Spot>) -> Result<(), ListenError> {
-        self.run.store(true, Ordering::Relaxed);
+        self.run.store(false, Ordering::Relaxed);
 
         let thdname = format!("{}@{}:{}", self.callsign, self.host, self.port);
         let constring = format!("{}:{}", self.host, self.port);
 
         let call = self.callsign.clone();
         let flag = self.run.clone();
-        let thd = thread::Builder::new()
-            .name(thdname)
-            .spawn(move || {
-                let res = match TcpStream::connect(&constring) {
-                    Ok(stream) => run(stream, channel, flag.clone(), &call),
-                    Err(_) => Err(ListenError::ConnectionError),
-                };
-                flag.store(false, Ordering::Relaxed);
-                res
-            })
-            .map_err(|_| ListenError::InternalError)?;
 
-        self.handle = Some(thd);
+        match TcpStream::connect(&constring) {
+            Ok(stream) => {
+                flag.store(true, Ordering::Relaxed);
+                let thd = thread::Builder::new()
+                    .name(thdname)
+                    .spawn(move || {
+                        let res = run(stream, channel, flag.clone(), &call);
+                        flag.store(false, Ordering::Relaxed);
+                        res
+                    })
+                    .map_err(|_| ListenError::InternalError)?;
 
-        Ok(())
+                self.handle = Some(thd);
+                Ok(())
+            }
+            Err(_) => Err(ListenError::ConnectionError),
+        }
     }
 }
 
