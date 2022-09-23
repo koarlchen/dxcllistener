@@ -135,10 +135,10 @@ impl Listener {
 
         match TcpStream::connect(&constring) {
             Ok(stream) => {
-                flag.store(true, Ordering::Relaxed);
                 let thd = thread::Builder::new()
                     .name(thdname)
                     .spawn(move || {
+                        flag.store(true, Ordering::Relaxed);
                         let res = run(stream, channel, flag.clone(), &call);
                         flag.store(false, Ordering::Relaxed);
                         res
