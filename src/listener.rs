@@ -3,7 +3,7 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 use std::io::{BufRead, BufReader, Write};
-use std::net::TcpStream;
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread::JoinHandle;
@@ -133,8 +133,19 @@ impl Listener {
         let call = self.callsign.clone();
         let flag = self.run.clone();
 
-        match TcpStream::connect(&constring) {
-            Ok(stream) => {
+        // Parse given connection string to addresses (may require DNS resolving)
+        let servers: Vec<SocketAddr> = constring
+            .to_socket_addrs()
+            .map_err(|_| ListenError::ConnectionError)?
+            .collect();
+
+        let mut ret: Result<(), ListenError> = Err(ListenError::ConnectionError);
+
+        // Try to connect to all given connection addresses
+        for server in servers.iter() {
+            if let Ok(stream) =
+                TcpStream::connect_timeout(server, std::time::Duration::from_secs(1))
+            {
                 let thd = thread::Builder::new()
                     .name(thdname)
                     .spawn(move || {
@@ -146,10 +157,12 @@ impl Listener {
                     .map_err(|_| ListenError::InternalError)?;
 
                 self.handle = Some(thd);
-                Ok(())
+                ret = Ok(());
+                break;
             }
-            Err(_) => Err(ListenError::ConnectionError),
         }
+
+        ret
     }
 }
 
