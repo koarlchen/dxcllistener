@@ -124,6 +124,14 @@ impl Listener {
     ///
     /// The result shall be `Ok(())` if the listener is connected and is waiting for spots.
     /// An `Err(ListenError)` shall be returned in case something went wrong while connecting.
+    ///
+    /// ## Notes
+    ///
+    /// * The timeout for the tcp connection attempt to the server is configured to one second.
+    /// * In case a hostname instead of a ip address is given,
+    ///   all resolved addresses related to the hostname will be used to try to establish a connection to the server.
+    ///   All connection attempts are executed one after another. Each connection attempt is configured with the mentioned timeout.
+    ///   If one connection attempt succeeds, none of the other addresses will be used and the listener is running with the established connection.
     pub fn listen(&mut self, channel: mpsc::Sender<dxclparser::Spot>) -> Result<(), ListenError> {
         self.run.store(false, Ordering::Relaxed);
 
