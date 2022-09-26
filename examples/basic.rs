@@ -1,5 +1,6 @@
 use std::env;
 use std::sync::mpsc;
+use std::time::Duration;
 
 use dxcllistener::Listener;
 
@@ -19,7 +20,7 @@ fn main() {
 
         // Create and start listener
         let mut listener = Listener::new(host.into(), port, call.into());
-        listener.listen(tx).unwrap();
+        listener.listen(tx, Duration::from_secs(1)).unwrap();
 
         // Process spots
         while let Ok(spot) = rx.recv() {

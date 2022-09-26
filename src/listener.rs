@@ -119,6 +119,7 @@ impl Listener {
     /// ## Arguments
     ///
     /// * `channel`: Communication channel where to send received spots to
+    /// * `conn_timeout`: Connection timeout to server
     ///
     /// ## Result
     ///
@@ -127,12 +128,17 @@ impl Listener {
     ///
     /// ## Notes
     ///
-    /// * The timeout for the tcp connection attempt to the server is configured to one second.
-    /// * In case a hostname instead of a ip address is given,
-    ///   all resolved addresses related to the hostname will be used to try to establish a connection to the server.
-    ///   All connection attempts are executed one after another. Each connection attempt is configured with the mentioned timeout.
-    ///   If one connection attempt succeeds, none of the other addresses will be used and the listener is running with the established connection.
-    pub fn listen(&mut self, channel: mpsc::Sender<dxclparser::Spot>) -> Result<(), ListenError> {
+    /// In case a hostname instead of a ip address is given,
+    /// all resolved addresses related to the hostname will be used to try to establish a connection to the server.
+    /// All connection attempts are executed one after another.
+    /// Each connection attempt is configured with the defined timeout.
+    /// If one connection attempt succeeds, none of the other addresses will be used
+    /// and the listener is running with the established connection.
+    pub fn listen(
+        &mut self,
+        channel: mpsc::Sender<dxclparser::Spot>,
+        conn_timeout: Duration,
+    ) -> Result<(), ListenError> {
         self.run.store(false, Ordering::Relaxed);
 
         let thdname = format!("{}@{}:{}", self.callsign, self.host, self.port);
@@ -151,9 +157,7 @@ impl Listener {
 
         // Try to connect to all given connection addresses
         for server in servers.iter() {
-            if let Ok(stream) =
-                TcpStream::connect_timeout(server, std::time::Duration::from_secs(1))
-            {
+            if let Ok(stream) = TcpStream::connect_timeout(server, conn_timeout) {
                 let thd = thread::Builder::new()
                     .name(thdname)
                     .spawn(move || {

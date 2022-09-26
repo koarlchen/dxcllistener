@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
+use std::time::Duration;
 
 use dxcllistener::Listener;
 
@@ -16,7 +17,7 @@ fn main() {
 
     // Start listening for spots
     for lis in listeners.iter_mut() {
-        lis.listen(tx.clone()).unwrap();
+        lis.listen(tx.clone(), Duration::from_secs(1)).unwrap();
     }
 
     // Stop signal
