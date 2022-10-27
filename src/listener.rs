@@ -2,14 +2,17 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-use std::io::{BufRead, BufReader, Write};
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::fmt;
+use std::str;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
-use std::thread::JoinHandle;
-use std::time::Duration;
-use std::{fmt, thread};
+use std::sync::Arc;
 use thiserror::Error;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::tcp::{ReadHalf, WriteHalf};
+use tokio::net::TcpStream;
+use tokio::sync::mpsc::{self, UnboundedSender};
+use tokio::task::JoinHandle;
+use tokio::time;
 
 // Authentication tokens sent by cluster servers.
 const AUTH_TOKEN: [&str; 2] = ["login:", "Please enter your call:"];
@@ -26,6 +29,9 @@ pub enum ListenError {
     #[error("failed to connect to server")]
     ConnectionError,
 
+    #[error("timeout while connect to server")]
+    ConnectionTimeout,
+
     #[error("failed to authenticate at server")]
     AuthenticationError,
 
@@ -37,16 +43,9 @@ pub enum ListenError {
 
     #[error("receiver for parsed spots lost")]
     ReceiverLost,
-}
 
-/// State of communication
-#[derive(PartialEq)]
-enum State {
-    /// Authenticate at server
-    Auth,
-
-    /// Receive and parse spots from server
-    Parse,
+    #[error("shutdown was already requested")]
+    ShutdownAlreadyRequested,
 }
 
 pub struct Listener {
@@ -65,6 +64,9 @@ pub struct Listener {
 
     /// Handle to the listener thread
     handle: Option<JoinHandle<Result<(), ListenError>>>,
+
+    /// Shutdown signal
+    shutdown: Option<UnboundedSender<()>>,
 }
 
 impl fmt::Display for Listener {
@@ -74,16 +76,18 @@ impl fmt::Display for Listener {
 }
 
 impl Listener {
-    /// Request the stop of the listener.
-    /// The timespan between the request and the actual stop of the trigger may take up to 250 ms.
-    pub fn request_stop(&self) {
-        self.run.store(false, Ordering::Relaxed);
+    /// Request the stop of the listener
+    pub fn request_stop(&mut self) -> Result<(), ListenError> {
+        match self.shutdown.take() {
+            Some(sd) => sd.send(()).map_err(|_| ListenError::InternalError),
+            None => Err(ListenError::ShutdownAlreadyRequested),
+        }
     }
 
     /// Join the listener to get the result
-    pub fn join(&mut self) -> Result<(), ListenError> {
+    pub async fn join(&mut self) -> Result<(), ListenError> {
         match self.handle.take() {
-            Some(h) => h.join().unwrap(),
+            Some(h) => h.await.map_err(|_| ListenError::InternalError)?,
             None => Err(ListenError::AlreadyJoined),
         }
     }
@@ -93,17 +97,17 @@ impl Listener {
         self.run.load(Ordering::Relaxed)
     }
 
-    /// Create new instace of `Listener`
+    /// Create new instace of `Listener`.
     ///
-    /// ## Arguments
+    /// # Arguments
     ///
     /// * `host`: Host of server
     /// * `port`: Port of server
     /// * `callsign`: Callsign to use for authentication
     ///
-    /// ## Result
+    /// # Result
     ///
-    /// New instance of a `Listener`.
+    /// Returns a new instance of a `Listener`.
     pub fn new(host: String, port: u16, callsign: String) -> Self {
         Self {
             host,
@@ -111,167 +115,180 @@ impl Listener {
             callsign,
             run: Arc::new(AtomicBool::new(false)),
             handle: None,
+            shutdown: None,
         }
     }
 
     /// Listen for data from dx cluster.
     ///
-    /// ## Arguments
+    /// # Arguments
     ///
     /// * `channel`: Communication channel where to send received spots to
     /// * `conn_timeout`: Connection timeout to server
     ///
-    /// ## Result
+    /// # Result
     ///
     /// The result shall be `Ok(())` if the listener is connected and is waiting for spots.
     /// An `Err(ListenError)` shall be returned in case something went wrong while connecting.
-    ///
-    /// ## Notes
-    ///
-    /// In case a hostname instead of a ip address is given,
-    /// all resolved addresses related to the hostname will be used to try to establish a connection to the server.
-    /// All connection attempts are executed one after another.
-    /// Each connection attempt is configured with the defined timeout.
-    /// If one connection attempt succeeds, none of the other addresses will be used
-    /// and the listener is running with the established connection.
-    pub fn listen(
+    pub async fn listen(
         &mut self,
-        channel: mpsc::Sender<dxclparser::Spot>,
-        conn_timeout: Duration,
+        channel: mpsc::UnboundedSender<String>,
+        connection_timeout: std::time::Duration,
     ) -> Result<(), ListenError> {
         self.run.store(false, Ordering::Relaxed);
 
-        let thdname = format!("{}@{}:{}", self.callsign, self.host, self.port);
         let constring = format!("{}:{}", self.host, self.port);
-
         let call = self.callsign.clone();
         let flag = self.run.clone();
 
-        // Parse given connection string to addresses (may require DNS resolving)
-        let servers: Vec<SocketAddr> = constring
-            .to_socket_addrs()
-            .map_err(|_| ListenError::ConnectionError)?
-            .collect();
+        // Open connection to server with configured timeout
+        match time::timeout(connection_timeout, TcpStream::connect(constring))
+            .await
+            .map_err(|_| ListenError::ConnectionTimeout)?
+        {
+            Ok(stream) => {
+                // Create communication channel to later request the shutdown of the task
+                let (shutdown_tx, shutdown_rx) = mpsc::unbounded_channel();
 
-        let mut ret: Result<(), ListenError> = Err(ListenError::ConnectionError);
+                // Set listener-running flag to true
+                flag.store(true, Ordering::Relaxed);
 
-        // Try to connect to all given connection addresses
-        for server in servers.iter() {
-            if let Ok(stream) = TcpStream::connect_timeout(server, conn_timeout) {
-                let thd = thread::Builder::new()
-                    .name(thdname)
-                    .spawn(move || {
-                        flag.store(true, Ordering::Relaxed);
-                        let res = run(stream, channel, flag.clone(), &call);
-                        flag.store(false, Ordering::Relaxed);
-                        res
-                    })
-                    .map_err(|_| ListenError::InternalError)?;
+                // Start listener main task
+                let tsk: JoinHandle<Result<(), ListenError>> = tokio::spawn(async move {
+                    // Authenticate at server and start listening for spots
+                    let res = run(stream, channel, shutdown_rx, &call).await;
 
-                self.handle = Some(thd);
-                ret = Ok(());
-                break;
+                    // Set listener-running flag to false
+                    flag.store(false, Ordering::Relaxed);
+                    res
+                });
+
+                self.shutdown = Some(shutdown_tx);
+                self.handle = Some(tsk);
+
+                Ok(())
             }
+            Err(_) => Err(ListenError::ConnectionError),
         }
-
-        ret
     }
 }
 
 /// Run the client.
 /// First, authenticate at server with callsign.
 /// Afterwards parse received spot and pass the parsed information into the communication channel.
-fn run(
+async fn run(
     mut stream: TcpStream,
-    pipe: mpsc::Sender<dxclparser::Spot>,
-    signal: Arc<AtomicBool>,
+    pipe: mpsc::UnboundedSender<String>,
+    mut shutdown: mpsc::UnboundedReceiver<()>,
     callsign: &str,
 ) -> Result<(), ListenError> {
-    // Enable timeout of tcp stream
-    stream
-        .set_read_timeout(Some(Duration::new(0, 250_000_000)))
-        .map_err(|_| ListenError::InternalError)?;
+    // Split stream ins reading and writing half
+    let (mut rx, mut tx) = stream.split();
+
+    // Authenticate at server
+    auth(&mut rx, &mut tx, callsign).await?;
+
+    // Parse incoming spots
+    parse(&mut rx, &mut shutdown, pipe).await?;
+
+    Ok(())
+}
+
+/// Authenticate at server
+async fn auth(
+    rx: &mut ReadHalf<'_>,
+    tx: &mut WriteHalf<'_>,
+    callsign: &str,
+) -> Result<(), ListenError> {
+    // Configuration
+    let mut retries = 5;
 
     // Create reader
-    let mut reader = BufReader::new(stream.try_clone().map_err(|_| ListenError::InternalError)?);
+    let mut reader = BufReader::new(rx);
 
-    // Returned result
-    let res: Result<(), ListenError>;
+    // Buffer
+    let mut buf = vec![];
 
-    // Number of timeouts until return with error
-    let mut timeout_counter = 20;
-
-    // Current state of connection
-    let mut state = State::Auth;
-
-    // Line buffer
-    let mut line = String::new();
-
-    // Communication loop
     loop {
-        // Read line, may timout after configured duration
-        match reader.read_line(&mut line) {
-            Ok(0) => {
-                // EOF
-                res = Err(ListenError::ConnectionLost);
-                break;
-            }
-            Err(err) if err.kind() != std::io::ErrorKind::WouldBlock => {
-                // Catch all errors, except for timeout
-                res = Err(ListenError::UnknownError);
-                break;
-            }
-            ret => {
-                // Check for signal to stop thread
-                if !signal.load(Ordering::Relaxed) {
-                    res = Ok(());
-                    break;
-                }
+        // Read data with timeout
+        let res = time::timeout(
+            time::Duration::from_millis(500),
+            reader.read_until(b':', &mut buf),
+        )
+        .await;
 
-                match state {
-                    // Authenticate at server
-                    State::Auth => {
-                        // New line or timed out, check for authentication string
-                        if is_auth_token(&line) {
-                            // Send callsign
-                            if let Err(err) = send_line(&mut stream, callsign) {
-                                res = Err(err);
-                                break;
-                            }
-                            // Switch state to parse incoming spots
-                            state = State::Parse;
-                        } else {
-                            // Check for timeout while authentication
-                            if ret.is_err() {
-                                timeout_counter -= 1;
-                                // Prevent endless loop, cancel authentication after a few timeouts
-                                if timeout_counter == 0 {
-                                    res = Err(ListenError::AuthenticationError);
-                                    break;
-                                }
-                            } else {
-                                // Clear buffer in case no timeout occurred which means a complete line ending with newline was received
-                                line.clear();
-                            }
-                        }
-                    }
-                    // Parse incoming spots
-                    State::Parse => {
-                        // If no timeout occurred, parse data
-                        if ret.is_ok() {
-                            let clean = clean_line(&line);
-                            if let Ok(spot) = dxclparser::parse(clean) {
-                                pipe.send(spot).map_err(|_| ListenError::ReceiverLost)?;
-                            }
-                            line.clear();
-                        }
-                    }
-                }
+        // Check for errors of read function
+        if let Ok(inner) = res {
+            check_read_result(&inner)?;
+        }
+
+        // Process read data
+        if let Ok(line) = str::from_utf8(&buf) {
+            // Check if the read string ends with the auth token
+            if is_auth_token(line) {
+                // Send callsign to server for authentication
+                send_line(tx, callsign).await?;
+                break;
+            }
+        } else {
+            // Take care of endless loop
+            retries -= 1;
+            if retries == 0 {
+                Err(ListenError::AuthenticationError)?;
             }
         }
     }
 
-    res
+    Ok(())
+}
+
+/// Parse and handle incoming spots
+async fn parse(
+    rx: &mut ReadHalf<'_>,
+    shutdown: &mut mpsc::UnboundedReceiver<()>,
+    pipe: mpsc::UnboundedSender<String>,
+) -> Result<(), ListenError> {
+    // Create reader
+    let mut reader = BufReader::new(rx);
+
+    // Line buffer
+    let mut line = String::with_capacity(100);
+
+    loop {
+        // Read line or wait for shutdown signal
+        tokio::select! {
+            res = reader.read_line(&mut line) => {
+                check_read_result(&res)?;
+            },
+            res = shutdown.recv() => {
+                if res.is_none() {
+                    Err(ListenError::InternalError)?;
+                }
+                break;
+            },
+        }
+
+        // Remove unwanted characters from received line
+        let clean = clean_line(&line);
+
+        // Push received line into channel
+        pipe.send(clean.into())
+            .map_err(|_| ListenError::ReceiverLost)?;
+
+        // Clear buffer
+        line.clear();
+    }
+
+    Ok(())
+}
+
+/// Check result from read function against possible errors.
+fn check_read_result(res: &tokio::io::Result<usize>) -> Result<(), ListenError> {
+    match res {
+        Ok(0) => Err(ListenError::ConnectionLost),
+        Err(_) => Err(ListenError::InternalError),
+        _ => Ok(()),
+    }
 }
 
 /// Clean line from unwanted characters.
@@ -280,10 +297,10 @@ fn clean_line(line: &str) -> &str {
     line.trim_end().trim_end_matches('\u{0007}')
 }
 
-/// Check if a given string starts with one of the authentication tokens.
+/// Check if a given string ends with one of the authentication tokens.
 fn is_auth_token(token: &str) -> bool {
     for key in AUTH_TOKEN.iter() {
-        if token.starts_with(key) {
+        if token.ends_with(key) {
             return true;
         }
     }
@@ -293,8 +310,9 @@ fn is_auth_token(token: &str) -> bool {
 
 /// Send a string through a tcp stream.
 /// Appends '\r\n' to the given string before sending it.
-fn send_line(stream: &mut TcpStream, data: &str) -> Result<(), ListenError> {
+async fn send_line(stream: &mut WriteHalf<'_>, data: &str) -> Result<(), ListenError> {
     stream
         .write_all(format!("{}\r\n", data).as_bytes())
+        .await
         .map_err(|_| ListenError::UnknownError)
 }

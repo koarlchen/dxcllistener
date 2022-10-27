@@ -1,10 +1,11 @@
 use std::env;
-use std::sync::mpsc;
 use std::time::Duration;
+use tokio::sync::mpsc;
 
 use dxcllistener::Listener;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args: Vec<String> = env::args().collect();
 
     if args.len() != 4 {
@@ -16,18 +17,21 @@ fn main() {
         let call = &args[3];
 
         // Create communication channel
-        let (tx, rx) = mpsc::channel();
+        let (tx, mut rx) = mpsc::unbounded_channel();
 
         // Create and start listener
         let mut listener = Listener::new(host.into(), port, call.into());
-        listener.listen(tx, Duration::from_secs(1)).unwrap();
+        listener
+            .listen(tx, Duration::from_millis(1000))
+            .await
+            .unwrap();
 
         // Process spots
-        while let Ok(spot) = rx.recv() {
-            println!("{}", spot.to_json());
+        while let Some(spot) = rx.recv().await {
+            println!("{}", spot);
         }
 
         // Evaluate error reason why the listener stopped unexpectedly
-        eprintln!("{}", listener.join().unwrap_err());
+        eprintln!("{}", listener.join().await.unwrap_err());
     }
 }

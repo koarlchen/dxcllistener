@@ -11,8 +11,8 @@ keywords = ["ham", "ham-radio", "dxcluster", "cluster"]
 
 
 [dependencies]
-dxclparser = "1.0.0"
-thiserror = "1.0.34"
+thiserror = "1.0.37"
+tokio = { version = "1.21.2", features = ["time", "rt", "net", "sync", "io-util", "macros"] }
 
 [dev-dependencies]
-ctrlc = "3.2.3"
+tokio = { version = "1.21.2", features = ["signal", "rt-multi-thread"] }
