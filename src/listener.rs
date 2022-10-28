@@ -188,8 +188,8 @@ async fn run(
     // Authenticate at server
     auth(&mut rx, &mut tx, callsign).await?;
 
-    // Parse incoming spots
-    parse(&mut rx, &mut shutdown, pipe).await?;
+    // Read incoming lines from server
+    read(&mut rx, &mut shutdown, pipe).await?;
 
     Ok(())
 }
@@ -242,8 +242,8 @@ async fn auth(
     Ok(())
 }
 
-/// Parse and handle incoming spots
-async fn parse(
+/// Read and forward incoming lines
+async fn read(
     rx: &mut ReadHalf<'_>,
     shutdown: &mut mpsc::UnboundedReceiver<()>,
     pipe: mpsc::UnboundedSender<String>,
