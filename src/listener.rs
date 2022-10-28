@@ -283,11 +283,11 @@ async fn read(
 }
 
 /// Check result from read function against possible errors.
-fn check_read_result(res: &tokio::io::Result<usize>) -> Result<(), ListenError> {
+fn check_read_result(res: &tokio::io::Result<usize>) -> Result<usize, ListenError> {
     match res {
         Ok(0) => Err(ListenError::ConnectionLost),
         Err(_) => Err(ListenError::InternalError),
-        _ => Ok(()),
+        Ok(num) => Ok(*num),
     }
 }
 
