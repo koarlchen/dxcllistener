@@ -1,6 +1,6 @@
 [package]
 name = "dxcllistener"
-version = "0.4.0"
+version = "1.0.0"
 authors = ["Max <max@karl.wf>"]
 edition = "2021"
 license = "MPL-2.0"
