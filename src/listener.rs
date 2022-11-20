@@ -7,7 +7,7 @@ use std::str;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::tcp::{ReadHalf, WriteHalf};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc::{self, UnboundedSender};
@@ -18,10 +18,13 @@ use tokio::time;
 const AUTH_TOKEN: [&str; 2] = ["login:", "Please enter your call:"];
 
 /// Possible errors while listening
-#[derive(Error, Debug)]
+#[derive(Error, Debug, PartialEq, Eq)]
 pub enum ListenError {
     #[error("unknown error")]
     UnknownError,
+
+    #[error("received invalid data")]
+    InvalidData,
 
     #[error("connection to server lost")]
     ConnectionLost,
@@ -258,7 +261,11 @@ async fn read(
         // Read line or wait for shutdown signal
         tokio::select! {
             res = reader.read_line(&mut line) => {
-                check_read_result(&res)?;
+                match check_read_result(&res) {
+                    Err(err) if err == ListenError::InvalidData => continue,
+                    Err(err) => Err(err)?,
+                    _ => {}
+                }
             },
             res = shutdown.recv() => {
                 if res.is_none() {
@@ -283,9 +290,10 @@ async fn read(
 }
 
 /// Check result from read function against possible errors.
-fn check_read_result(res: &tokio::io::Result<usize>) -> Result<usize, ListenError> {
+fn check_read_result(res: &io::Result<usize>) -> Result<usize, ListenError> {
     match res {
         Ok(0) => Err(ListenError::ConnectionLost),
+        Err(err) if err.kind() == io::ErrorKind::InvalidData => Err(ListenError::InvalidData),
         Err(_) => Err(ListenError::InternalError),
         Ok(num) => Ok(*num),
     }
