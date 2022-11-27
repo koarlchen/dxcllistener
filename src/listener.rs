@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+use socket2::{SockRef, TcpKeepalive};
 use std::fmt;
 use std::str;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,7 +33,7 @@ pub enum ListenError {
     #[error("failed to connect to server")]
     ConnectionError,
 
-    #[error("timeout while connect to server")]
+    #[error("timeout in connection to server")]
     ConnectionTimeout,
 
     #[error("failed to authenticate at server")]
@@ -144,36 +145,49 @@ impl Listener {
         let call = self.callsign.clone();
         let flag = self.run.clone();
 
-        // Open connection to server with configured timeout
-        match time::timeout(connection_timeout, TcpStream::connect(constring))
+        let stream = time::timeout(connection_timeout, connect(constring))
             .await
-            .map_err(|_| ListenError::ConnectionTimeout)?
-        {
-            Ok(stream) => {
-                // Create communication channel to later request the shutdown of the task
-                let (shutdown_tx, shutdown_rx) = mpsc::unbounded_channel();
+            .map_err(|_| ListenError::ConnectionTimeout)??;
 
-                // Set listener-running flag to true
-                flag.store(true, Ordering::Relaxed);
+        // Create communication channel to later request the shutdown of the task
+        let (shutdown_tx, shutdown_rx) = mpsc::unbounded_channel();
 
-                // Start listener main task
-                let tsk: JoinHandle<Result<(), ListenError>> = tokio::spawn(async move {
-                    // Authenticate at server and start listening for spots
-                    let res = run(stream, channel, shutdown_rx, &call).await;
+        // Set listener-running flag to true
+        flag.store(true, Ordering::Relaxed);
 
-                    // Set listener-running flag to false
-                    flag.store(false, Ordering::Relaxed);
-                    res
-                });
+        // Start listener main task
+        let tsk: JoinHandle<Result<(), ListenError>> = tokio::spawn(async move {
+            // Authenticate at server and start listening for spots
+            let res = run(stream, channel, shutdown_rx, &call).await;
 
-                self.shutdown = Some(shutdown_tx);
-                self.handle = Some(tsk);
+            // Set listener-running flag to false
+            flag.store(false, Ordering::Relaxed);
+            res
+        });
 
-                Ok(())
-            }
-            Err(_) => Err(ListenError::ConnectionError),
-        }
+        self.shutdown = Some(shutdown_tx);
+        self.handle = Some(tsk);
+
+        Ok(())
     }
+}
+
+/// Open connection to server
+async fn connect(constring: String) -> Result<TcpStream, ListenError> {
+    let tcp = TcpStream::connect(constring)
+        .await
+        .map_err(|_| ListenError::ConnectionError)?;
+
+    let ka = TcpKeepalive::new()
+        .with_time(time::Duration::from_secs(30))
+        .with_interval(time::Duration::from_secs(10))
+        .with_retries(6);
+
+    let sf = SockRef::from(&tcp);
+    sf.set_tcp_keepalive(&ka)
+        .map_err(|_| ListenError::InternalError)?;
+
+    Ok(tcp)
 }
 
 /// Run the client.
@@ -263,8 +277,7 @@ async fn read(
             res = reader.read_line(&mut line) => {
                 match check_read_result(&res) {
                     Err(err) if err == ListenError::InvalidData => continue,
-                    Err(err) => Err(err)?,
-                    _ => {}
+                    other => other.map(|_| ())?,
                 }
             },
             res = shutdown.recv() => {
@@ -290,10 +303,17 @@ async fn read(
 }
 
 /// Check result from read function against possible errors.
+///
+/// Possible `ListenError`:
+/// - `ConnectionLost`: Received EOF
+/// - `InvalidData`: Received data with incompatible encoding (utf-8 required)
+/// - `ConnectionTimeout`: TCP keepalive check failed
+/// - `InternalError`: Unknown/unhandled error
 fn check_read_result(res: &io::Result<usize>) -> Result<usize, ListenError> {
     match res {
         Ok(0) => Err(ListenError::ConnectionLost),
         Err(err) if err.kind() == io::ErrorKind::InvalidData => Err(ListenError::InvalidData),
+        Err(err) if err.kind() == io::ErrorKind::TimedOut => Err(ListenError::ConnectionTimeout),
         Err(_) => Err(ListenError::InternalError),
         Ok(num) => Ok(*num),
     }

@@ -13,6 +13,7 @@ keywords = ["ham", "ham-radio", "dxcluster", "cluster"]
 [dependencies]
 thiserror = "1.0.37"
 tokio = { version = "1.22.0", features = ["time", "rt", "net", "sync", "io-util", "macros"] }
+socket2 = "0.4.7"
 
 [dev-dependencies]
 tokio = { version = "1.22.0", features = ["signal", "rt-multi-thread"] }
