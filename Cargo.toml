@@ -1,6 +1,6 @@
 [package]
 name = "dxcllistener"
-version = "1.0.1"
+version = "1.0.2"
 authors = ["Max <max@karl.wf>"]
 edition = "2021"
 license = "MPL-2.0"
@@ -11,8 +11,8 @@ keywords = ["ham", "ham-radio", "dxcluster", "cluster"]
 
 
 [dependencies]
-thiserror = "1.0.37"
-tokio = { version = "1.22.0", features = ["time", "rt", "net", "sync", "io-util", "macros"] }
+thiserror = "1.0.49"
+tokio = { version = "1.33.0", features = ["time", "rt", "net", "sync", "io-util", "macros"] }
 socket2 = "0.5.4"
 
 [dev-dependencies]
