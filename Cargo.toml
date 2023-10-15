@@ -16,4 +16,4 @@ tokio = { version = "1.33.0", features = ["time", "rt", "net", "sync", "io-util"
 socket2 = "0.5.4"
 
 [dev-dependencies]
-tokio = { version = "1.22.0", features = ["signal", "rt-multi-thread"] }
+tokio = { version = "1.33.0", features = ["signal", "rt-multi-thread"] }
