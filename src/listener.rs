@@ -247,12 +247,12 @@ async fn auth(
                 send_line(tx, callsign).await?;
                 break;
             }
-        } else {
-            // Take care of endless loop
-            retries -= 1;
-            if retries == 0 {
-                Err(ListenError::AuthenticationError)?;
-            }
+        }
+
+        // Take care of endless loop
+        retries -= 1;
+        if retries == 0 {
+            Err(ListenError::AuthenticationError)?;
         }
     }
 
