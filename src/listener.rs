@@ -276,7 +276,7 @@ async fn read(
         tokio::select! {
             res = reader.read_line(&mut line) => {
                 match check_read_result(&res) {
-                    Err(err) if err == ListenError::InvalidData => continue,
+                    Err(ListenError::InvalidData) => continue,
                     other => other.map(|_| ())?,
                 }
             },
