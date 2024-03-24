@@ -305,7 +305,7 @@ async fn read(
 /// Check result from read function against possible errors.
 ///
 /// Possible `ListenError`:
-/// - `ConnectionLost`: Received EOF
+/// - `ConnectionLost`: Received EOF or peer closed connection
 /// - `InvalidData`: Received data with incompatible encoding (utf-8 required)
 /// - `ConnectionTimeout`: TCP keepalive check failed
 /// - `InternalError`: Unknown/unhandled error
@@ -314,7 +314,7 @@ fn check_read_result(res: &io::Result<usize>) -> Result<usize, ListenError> {
         Ok(0) => Err(ListenError::ConnectionLost),
         Err(err) if err.kind() == io::ErrorKind::InvalidData => Err(ListenError::InvalidData),
         Err(err) if err.kind() == io::ErrorKind::TimedOut => Err(ListenError::ConnectionTimeout),
-        Err(_) => Err(ListenError::InternalError),
+        Err(err) if err.kind() == io::ErrorKind::ConnectionReset => Err(ListenError::ConnectionLost),
         Ok(num) => Ok(*num),
     }
 }
